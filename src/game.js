@@ -1,4 +1,4 @@
-import { createMindbugBot } from "./bot-player.js?v=19";
+import { createMindbugBot } from "./bot-player.js?v=20";
 import { GameAnimations } from "./game-animations.js?v=4";
 import { getSfxVolume, getSfxVolumeLevel, playSoundEffect, setSfxVolumeLevel, unlockAudio } from "./sound.js?v=13";
 import { io } from "socket.io-client";

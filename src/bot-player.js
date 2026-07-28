@@ -327,14 +327,40 @@ function chooseFastFallbackAction(state, helpers, botIndex) {
   const bestPlay = player.hand
     .map(card => ({ card, score: scorePlay(card, state, helpers) }))
     .sort((a, b) => b.score - a.score)[0];
+  const bestAction = player.board
+    .filter(card => helpers.canUseEvolutionAction(card, botIndex))
+    .map(card => ({ card, score: scoreFallbackAction(card, state, helpers, botIndex) }))
+    .sort((a, b) => b.score - a.score)[0];
 
   const lethal = attackers.find(card => helpers.canDealDirectDamage(card, botIndex, enemyIndex)
     && state.players[enemyIndex].life <= helpers.directDamage(card));
   if (lethal) return { type: "attack", cardId: lethal.id };
+  if (bestAction && bestAction.score >= Math.max(bestAttack?.score ?? -Infinity, bestPlay?.score ?? -Infinity)) {
+    return { type: "action", cardId: bestAction.card.id };
+  }
   if (bestAttack && (!bestPlay || bestAttack.score >= bestPlay.score + 3)) return { type: "attack", cardId: bestAttack.card.id };
   if (bestPlay) return { type: "play", cardId: bestPlay.card.id };
   if (bestAttack) return { type: "attack", cardId: bestAttack.card.id };
   return { type: "pass" };
+}
+
+function scoreFallbackAction(card, state, helpers, botIndex) {
+  const enemy = state.players[1 - botIndex];
+  const player = state.players[botIndex];
+  if (card.name === "Dragon Inn") return player.board.length < enemy.board.length ? 100 + (3 - enemy.life) * 20 : -100;
+  if (card.name === "Cake Trickster") {
+    return enemy.life <= 1 && enemy.board.some(target => target.name === "Count Draculeech") ? 500 : -100;
+  }
+  if (card.name === "Infernostrich") {
+    return enemy.board.some(target => helpers.cardPower(target, 1 - botIndex) >= 7 && helpers.canAttack(target, 1 - botIndex))
+      ? 80
+      : -40;
+  }
+  if (card.name === "Octocopter") {
+    const targetValue = Math.max(0, ...enemy.board.map(target => scoreCard(target, state, helpers, 1 - botIndex)));
+    return targetValue >= scoreCard(card, state, helpers, botIndex) + 8 ? 70 : -80;
+  }
+  return 35 + scoreCard(card, state, helpers, botIndex);
 }
 
 function chooseHunterTarget(attacker, targets, state, helpers, botIndex) {
@@ -675,6 +701,10 @@ function learnedComebackActionBias(sim, action, activeIndex, helpers) {
       const power = simPower(target, sim, 1 - activeIndex, helpers);
       return power >= 4 && power <= 6;
     }).length >= 2) bias += 44;
+    if (card.name === "Westside Monster" && lifeDeficit > 0) bias += 34;
+    if (card.name === "Rhino Turtle" && lifeDeficit > 0) bias += 32;
+    if (card.name === "Hamster Lion" && enemy.board.length > 0) bias += 30;
+    if (card.name === "Robopup" && lifeDeficit > 0) bias += 26;
   }
   if (action.type === "action") {
     if (card.name === "Dragon Inn" && boardDeficit > 0) bias += 55;
@@ -686,6 +716,7 @@ function learnedComebackActionBias(sim, action, activeIndex, helpers) {
     if (card.name === "Turbo Bug" && enemy.life > 1) bias += 90;
     if (card.name === "Chameleon Sniper" && enemy.life <= 2) bias += 45;
     if (card.name === "Bugserker" && player.life === 1) bias += 30;
+    if (["Goreagle Alpha", "The Lurker", "Luchataur", "Rhino Turtle"].includes(card.name)) bias += 12;
   }
   return bias;
 }
@@ -720,6 +751,13 @@ function learnedSelfPlayActionBias(sim, action, activeIndex, helpers) {
     if (player.deck.length === 0 && player.hand.length === 1
       && player.board.some(boardCard => canSimAttack(boardCard, sim, activeIndex, helpers))) {
       bias -= 16;
+    }
+    const hasReadyFinisher = player.board.some(boardCard => (
+      ["Goreagle Alpha", "The Lurker", "Luchataur", "Rhino Turtle"].includes(boardCard.name)
+      && canSimAttack(boardCard, sim, activeIndex, helpers)
+    ));
+    if (hasReadyFinisher && ["Shield Bugs", "Kitsunsei", "Coach Panda", "Urchin Hurler"].includes(card.name)) {
+      bias -= 14;
     }
   }
   return bias;
@@ -817,11 +855,13 @@ function simAbilityComboScore(card, sim, ownerIndex, helpers) {
     score += allies.filter(ally => canSimAttack(ally, sim, ownerIndex, helpers)).length * 9;
   }
   if (card.name === "Axolotl Healer" && owner.hand.some(handCard => (
-    handCard.name === "Goreagle Alpha" || handCard.name === "Dr. Orange U. Tan"
+    handCard.name === "Goreagle Alpha"
+    || handCard.name === "Dr. Orange U. Tan"
+    || handCard.name === "Count Draculeech"
   ))) score += 18;
   if (card.name === "Puffermech" && enemy.board.some(target => simPower(target, sim, 1 - ownerIndex, helpers) >= 8)) score += 24;
   if (card.name === "Dragon Inn" && owner.board.length < enemy.board.length) score += 26;
-  if (card.name === "Infernostrich" && enemy.board.some(target => simPower(target, sim, 1 - ownerIndex, helpers) >= 7)) score += 28;
+  if (card.name === "Infernostrich" && simInfernostrichHasUrgentTarget(sim, ownerIndex, helpers)) score += 28;
   if (card.name === "Octocopter") {
     const bestTargetValue = Math.max(0, ...enemy.board.map(
       target => scoreSimCard(target, sim, 1 - ownerIndex, helpers)
@@ -961,6 +1001,13 @@ function canSimAttack(card, sim = null, ownerIndex = -1, helpers = {}) {
     helpers.creatureAbilitiesEnabled
     && sim
     && ownerIndex >= 0
+    && sim.players[1 - ownerIndex]?.board.some(enemyCard => enemyCard.name === "Westside Monster")
+    && simKeywords(card, sim, ownerIndex, helpers).includes("SNEAKY")
+  ) return false;
+  if (
+    helpers.creatureAbilitiesEnabled
+    && sim
+    && ownerIndex >= 0
     && sim.players[1 - ownerIndex]?.board.some(enemyCard => enemyCard.name === "Hamster Lion")
   ) {
     const board = sim.players[ownerIndex]?.board ?? [];
@@ -982,7 +1029,7 @@ function canSimUseAction(card, sim, ownerIndex, helpers) {
   }
   if (card.name === "Dragon Inn") return sim.players[ownerIndex].board.length < enemy.board.length;
   if (card.name === "Infernostrich") {
-    return enemy.board.some(target => simPower(target, sim, 1 - ownerIndex, helpers) >= 7);
+    return simInfernostrichHasUrgentTarget(sim, ownerIndex, helpers);
   }
   if (card.name === "Octocopter") {
     const bestTargetValue = Math.max(0, ...enemy.board.map(
@@ -991,6 +1038,19 @@ function canSimUseAction(card, sim, ownerIndex, helpers) {
     return bestTargetValue >= scoreSimCard(card, sim, ownerIndex, helpers) + 8;
   }
   return false;
+}
+
+function simInfernostrichHasUrgentTarget(sim, ownerIndex, helpers) {
+  const enemyIndex = 1 - ownerIndex;
+  const player = sim.players[ownerIndex];
+  const incomingBefore = simTotalFaceDamage(sim, enemyIndex, helpers);
+  return sim.players[enemyIndex].board.some(target => {
+    if (simPower(target, sim, enemyIndex, helpers) < 7 || !canSimAttack(target, sim, enemyIndex, helpers)) return false;
+    const targetKeywords = simKeywords(target, sim, enemyIndex, helpers);
+    if (incomingBefore >= player.life) return true;
+    if (player.life <= 2 && (targetKeywords.includes("FRENZY") || targetKeywords.includes("SNEAKY"))) return true;
+    return simProjectedFaceDamage(target, sim, enemyIndex, ownerIndex, helpers) >= player.life;
+  });
 }
 
 function simEvolutionNextName(cardName) {
@@ -1126,7 +1186,7 @@ function applySimPlayAbility(sim, card, ownerIndex, enemyIndex, helpers) {
   if (
     card.name === "Dr. Orange U. Tan"
     && sim.players[ownerIndex].life > 1
-    && sim.players[enemyIndex].board.length >= 2
+    && sim.players[enemyIndex].board.length - sim.players[ownerIndex].board.length >= 2
   ) {
     sim.players[ownerIndex].life -= 1;
     while (sim.players[enemyIndex].board.length) {
@@ -1410,6 +1470,16 @@ function simLegalBlockers(sim, attacker, attackerIndex, defenderIndex, helpers) 
       const highestPower = Math.max(...sim.players[defenderIndex].board.map(card => simPower(card, sim, defenderIndex, helpers)));
       if (simPower(blocker, sim, defenderIndex, helpers) === highestPower) return false;
     }
+    if (
+      helpers.creatureAbilitiesEnabled
+      && sim.players[attackerIndex].board.some(card => card.name === "Mole Machine")
+      && simPower(blocker, sim, defenderIndex, helpers) >= 7
+    ) return false;
+    if (
+      helpers.creatureAbilitiesEnabled
+      && sim.players[attackerIndex].board.some(card => card.name === "Westside Monster")
+      && simKeywords(blocker, sim, defenderIndex, helpers).includes("SNEAKY")
+    ) return false;
     return true;
   });
 }
@@ -1612,10 +1682,13 @@ function simPower(card, sim, ownerIndex, helpers) {
   if (card.name === "Lone Yeti" && owner.board.length === 1) power += 5;
   if (card.name === "Bugserker" && owner.life === 1) power += 8;
   if (card.name === "Froblin Instigator") power += Math.max(0, owner.board.length - 1) * 2;
+  if (card.name === "Spiky Shinobi" && owner.mindbugs === 0) power += 5;
+  if (card.name === "Cheery Chimpborg" && sim.players[1 - ownerIndex].board.length >= 3) power += 5;
   for (const ally of owner.board) {
     if (ally.id === card.id) continue;
     if (ally.name === "Shield Bugs") power += 1;
     if (ally.name === "Urchin Hurler" && ownerIndex === sim.active) power += 2;
+    if (ally.name === "Coach Panda" && owner.board.length === 2) power += 3;
   }
   return power;
 }
@@ -1640,6 +1713,10 @@ function simKeywords(card, sim, ownerIndex, helpers, visited = new Set()) {
   if (thrower && thrower.id !== card.id && simPower(card, sim, ownerIndex, helpers) <= 4) {
     set.add("HUNTER");
     set.add("POISONOUS");
+  }
+  if (owner.board.some(ally => ally.name === "Kitsunsei" && ally.id !== card.id)) set.add("SNEAKY");
+  if (owner.board.some(ally => ally.name === "Coach Panda" && ally.id !== card.id) && owner.board.length === 2) {
+    set.add("FRENZY");
   }
   return [...set];
 }
