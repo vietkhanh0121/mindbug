@@ -514,6 +514,7 @@ const els = {
 let state;
 let gameAssetsPreloadPromise = null;
 let gameAssetsPreloaded = false;
+const retainedPreloadedImages = new Map();
 let idCounter = 1;
 let choiceDepth = 0;
 let remoteMessageTimer = 0;
@@ -7110,9 +7111,15 @@ function allGameAssetUrls() {
 }
 
 function preloadImage(url) {
+  if (retainedPreloadedImages.has(url)) return Promise.resolve();
   return new Promise(resolve => {
     const image = new Image();
-    image.decoding = "async";
+    // Keep decoded sprites alive for the whole session. Mobile Safari can
+    // otherwise discard the temporary preload Image and briefly paint a blank
+    // CSS background whenever the board DOM is rebuilt.
+    image.decoding = "sync";
+    image.loading = "eager";
+    retainedPreloadedImages.set(url, image);
     image.onload = () => {
       if (typeof image.decode === "function") {
         image.decode().catch(() => {}).finally(resolve);
@@ -7120,7 +7127,10 @@ function preloadImage(url) {
         resolve();
       }
     };
-    image.onerror = resolve;
+    image.onerror = () => {
+      retainedPreloadedImages.delete(url);
+      resolve();
+    };
     image.src = url;
   });
 }
