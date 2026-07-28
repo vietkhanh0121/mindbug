@@ -77,7 +77,7 @@ File này dùng cho lớp hiển thị tiếng Việt của game. Tiêu đề ti
 - Số lượng: 2
 - Tấn công: 1
 - Từ khóa: TÀNG HÌNH
-- Hiệu ứng: Khi Vào sân: Bỏ 1 lá bài trên tay để Giết 1 Quái vật
+- Hiệu ứng: Khi Vào sân: Bỏ 1 lá bài trên tay để Giết 1 Quái vật bất kỳ trên sân của mình hoặc đối thủ
 
 ## Infernostrich
 - Tên: Cần Tây Cân 7

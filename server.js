@@ -73,7 +73,7 @@ const BEYOND_EVOLUTION_CARDS = [
   ["Coach Panda", 2, 6, [], "While there is exactly 1 other allied creature, that creature has +3 power and FRENZY."],
   ["Dr. Orange U. Tan", 1, 6, [], "Play: You may lose 1 life. If you do, return all enemy creatures to the opponent's hand."],
   ["Dragon Inn", 2, 3, ["TOUGH"], "Action: If you control fewer creatures than the opponent, they lose 1 life."],
-  ["Earwig Assassin", 2, 1, ["SNEAKY"], "Play: You may discard a card. If you do, defeat a creature."],
+  ["Earwig Assassin", 2, 1, ["SNEAKY"], "Play: You may discard a card. If you do, defeat any creature."],
   ["Infernostrich", 1, 6, [], "Action: Defeat an enemy creature with power 7 or more."],
   ["Kitsunsei", 1, 4, [], "Other allied creatures have SNEAKY."],
   ["Mole Machine", 2, 5, ["TOUGH"], "The opponent cannot block with creatures with power 7 or more."],
@@ -602,14 +602,17 @@ function completeServerPendingAfter(state, pending) {
     return null;
   }
   if (after.type === "earwig-defeat") {
-    const enemy = state.players[after.enemyIndex];
-    if (enemy?.board.length) {
+    const candidates = state.players.flatMap((player, ownerIndex) => (
+      player.board.map(card => ({ card, ownerIndex }))
+    ));
+    if (candidates.length) {
       beginServerPending(state, {
         type: "defeat",
         actorIndex: after.actorIndex,
-        ownerIndex: after.enemyIndex,
+        ownerIndex: null,
+        ownerByCardId: Object.fromEntries(candidates.map(target => [target.card.id, target.ownerIndex])),
         sourceCard: after.sourceCard,
-        cardIds: enemy.board.map(card => card.id),
+        cardIds: candidates.map(target => target.card.id),
         allowSkip: false,
         after: after.after
       });
@@ -1686,10 +1689,15 @@ function applyGameAction(room, socket, action = {}) {
     let defeatedIds = [];
     let defeatedEffects = [];
     let defeatedCard = null;
+    let defeatedOwnerIndex = pending.ownerIndex;
     let selectedTarget = false;
     if (action.cardId) {
       if (!pending.cardIds.includes(action.cardId)) return { ok: false, message: "Mục tiêu không hợp lệ." };
-      const removed = removeServerCreature(state, action.cardId, pending.ownerIndex);
+      defeatedOwnerIndex = Number.isInteger(pending.ownerByCardId?.[action.cardId])
+        ? pending.ownerByCardId[action.cardId]
+        : pending.ownerIndex;
+      if (!Number.isInteger(defeatedOwnerIndex)) return { ok: false, message: "Không tìm thấy chủ sở hữu mục tiêu." };
+      const removed = removeServerCreature(state, action.cardId, defeatedOwnerIndex);
       if (removed) {
         selectedTarget = true;
         defeatedIds = [removed.id];
@@ -1712,7 +1720,7 @@ function applyGameAction(room, socket, action = {}) {
     if (defeatedCard) {
       const defeatedAbility = resolveServerDefeatedAbilities(
         state,
-        [{ card: defeatedCard, ownerIndex: pending.ownerIndex }],
+        [{ card: defeatedCard, ownerIndex: defeatedOwnerIndex }],
         continuationAfter
       );
       defeatedIds.push(...(defeatedAbility.defeatedIds ?? []));
@@ -1886,8 +1894,8 @@ function applyGameAction(room, socket, action = {}) {
       return { ok: false, message: "Không thể chọn hiệu ứng Earwig Assassin lúc này." };
     }
     const owner = state.players[pending.ownerIndex];
-    const enemyIndex = 1 - pending.ownerIndex;
-    if (action.activate && owner.hand.length && state.players[enemyIndex].board.length) {
+    const creaturesInPlay = state.players.reduce((total, player) => total + player.board.length, 0);
+    if (action.activate && owner.hand.length && creaturesInPlay > 0) {
       state.phase = "pending";
       state.pending = {
         type: "discard",
@@ -1899,7 +1907,6 @@ function applyGameAction(room, socket, action = {}) {
         after: {
           type: "earwig-defeat",
           actorIndex,
-          enemyIndex,
           sourceCard: pending.sourceCard,
           after: pending.after
         }

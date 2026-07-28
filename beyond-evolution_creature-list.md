@@ -62,7 +62,7 @@
 - Số lượng: 2
 - Power: 1
 - Keyword: SNEAKY
-- Ability: Play: You may discard a card. If you do, defeat a creature.
+- Ability: Play: You may discard a card. If you do, defeat any creature.
 
 ## Infernostrich
 - Số lượng: 1

@@ -75,7 +75,7 @@ const BEYOND_EVOLUTION_CARDS = [
   ["Coach Panda", 2, 6, [], "While there is exactly 1 other allied creature, that creature has +3 power and FRENZY."],
   ["Dr. Orange U. Tan", 1, 6, [], "Play: You may lose 1 life. If you do, return all enemy creatures to the opponent's hand."],
   ["Dragon Inn", 2, 3, ["TOUGH"], "Action: If you control fewer creatures than the opponent, they lose 1 life."],
-  ["Earwig Assassin", 2, 1, ["SNEAKY"], "Play: You may discard a card. If you do, defeat a creature."],
+  ["Earwig Assassin", 2, 1, ["SNEAKY"], "Play: You may discard a card. If you do, defeat any creature."],
   ["Infernostrich", 1, 6, [], "Action: Defeat an enemy creature with power 7 or more."],
   ["Kitsunsei", 1, 4, [], "Other allied creatures have SNEAKY."],
   ["Mole Machine", 2, 5, ["TOUGH"], "The opponent cannot block with creatures with power 7 or more."],
@@ -1230,6 +1230,13 @@ function mirrorPending(pending) {
   if (mirrored.evolve && typeof mirrored.evolve === "object") {
     for (const key of ["actorIndex", "ownerIndex"]) {
       if (Number.isInteger(mirrored.evolve[key])) mirrored.evolve[key] = swapPlayerIndex(mirrored.evolve[key]);
+    }
+  }
+  if (mirrored.ownerByCardId && typeof mirrored.ownerByCardId === "object") {
+    for (const cardId of Object.keys(mirrored.ownerByCardId)) {
+      if (Number.isInteger(mirrored.ownerByCardId[cardId])) {
+        mirrored.ownerByCardId[cardId] = swapPlayerIndex(mirrored.ownerByCardId[cardId]);
+      }
     }
   }
   return mirrored;
@@ -3285,12 +3292,20 @@ async function resolvePlayAbility(card, ownerIndex) {
       break;
     }
     case "Earwig Assassin": {
-      const canActivate = owner.hand.length > 0 && enemy.board.length > 0;
+      const creaturesInPlay = state.players.flatMap(player => [...player.board]);
+      const canActivate = owner.hand.length > 0 && creaturesInPlay.length > 0;
       const activate = canActivate && (ownerIndex === 0 ? await waitForEarwigChoice(card, ownerIndex) : true);
       if (!activate) break;
       await chooseCardsToDiscard(ownerIndex, ownerIndex, card, 1);
-      if (enemy.board.length) {
-        await defeatOne(ownerIndex, [...enemy.board], "Chọn Quái vật đối thủ để hạ", false, card);
+      const candidates = state.players.flatMap(player => [...player.board]);
+      if (candidates.length) {
+        showRemoteMessage("Chọn Quái vật để giết", "", { sticky: ownerIndex === 0 });
+        const pickedId = ownerIndex === 0
+          ? await pickDefeatTargetFromBoard(candidates, state.active, null, card, ownerIndex)
+          : randomItem(candidates)?.id;
+        clearRemoteMessage();
+        const targetOwnerIndex = state.players.findIndex(player => player.board.some(target => target.id === pickedId));
+        if (targetOwnerIndex >= 0) await defeatCreature(pickedId, targetOwnerIndex);
       }
       break;
     }
@@ -5186,7 +5201,8 @@ function currentDimmedCardIds() {
   if (defeatSelection) {
     for (const player of state.players) {
       for (const card of player.board) {
-        const isTargetCandidate = defeatSelection.cardIds.has(card.id) && state.players[defeatSelection.ownerIndex]?.board.includes(card);
+        const isTargetCandidate = defeatSelection.cardIds.has(card.id)
+          && (defeatSelection.ownerIndex === null || state.players[defeatSelection.ownerIndex]?.board.includes(card));
         const isSourceCard = card.id === defeatSelection.sourceCard?.id;
         if (!isTargetCandidate && !isSourceCard) ids.add(card.id);
       }
@@ -6661,7 +6677,7 @@ function renderCard(card, ownerIndex, zone) {
   const isBlockCandidate = serverBlockCandidate || Boolean(blockSelection?.cardIds.has(card.id) && ownerIndex === blockSelection.ownerIndex && zone === "board");
   const isDiscardCandidate = Boolean(discardSelection?.cardIds.has(card.id) && ownerIndex === discardSelection.ownerIndex && zone === "hand");
   const isDefeatCandidate = Boolean(
-    (defeatSelection?.cardIds.has(card.id) && ownerIndex === defeatSelection.ownerIndex && zone === "board")
+    (defeatSelection?.cardIds.has(card.id) && (defeatSelection.ownerIndex === null || ownerIndex === defeatSelection.ownerIndex) && zone === "board")
     || (disableBlockSelection?.cardIds.has(card.id) && ownerIndex === disableBlockSelection.ownerIndex && zone === "board")
   );
   const isStealCandidate = Boolean(stealSelection?.cardIds.has(card.id) && ownerIndex === stealSelection.ownerIndex && zone === "board");
@@ -6719,7 +6735,7 @@ function inspectCardCanAct(card, ownerIndex, zone) {
   const isBlockCandidate = Boolean(blockSelection?.cardIds.has(card.id) && ownerIndex === blockSelection.ownerIndex && zone === "board");
   const isDiscardCandidate = Boolean(discardSelection?.cardIds.has(card.id) && ownerIndex === discardSelection.ownerIndex && zone === "hand");
   const isDefeatCandidate = Boolean(
-    (defeatSelection?.cardIds.has(card.id) && ownerIndex === defeatSelection.ownerIndex && zone === "board")
+    (defeatSelection?.cardIds.has(card.id) && (defeatSelection.ownerIndex === null || ownerIndex === defeatSelection.ownerIndex) && zone === "board")
     || (disableBlockSelection?.cardIds.has(card.id) && ownerIndex === disableBlockSelection.ownerIndex && zone === "board")
   );
   const isStealCandidate = Boolean(stealSelection?.cardIds.has(card.id) && ownerIndex === stealSelection.ownerIndex && zone === "board");
