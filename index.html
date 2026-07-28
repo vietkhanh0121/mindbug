@@ -53,8 +53,8 @@
             </span>
             <input id="gameSfxVolumeSlider" type="range" min="1" max="5" step="1" value="3">
           </label>
-          <button id="gameSettingsNewGameButton" class="lobbyStartBtn" type="button">Ván mới</button>
           <button id="gameSettingsLobbyButton" class="lobbyStartBtn" type="button">Về sảnh</button>
+          <button id="gameSettingsNewGameButton" class="lobbyStartBtn" type="button">Ván mới</button>
           <button id="gameSettingsCloseButton" class="lobbyBackBtn" type="button">Đóng</button>
         </section>
       </div>
@@ -260,6 +260,7 @@
         <img id="gameOverBanner" class="gameOverBanner" alt="Thắng" hidden>
         <h2 id="gameOverTitle" class="srOnly">Thắng</h2>
         <p id="gameOverText"></p>
+        <button id="gameOverLobby" type="button">Về sảnh</button>
         <button id="gameOverNewGame" type="button">Ván mới</button>
       </div>
     </dialog>
@@ -276,6 +277,6 @@
     </dialog>
 
     <script type="module" src="src/force-reload.js?v=27"></script>
-    <script type="module" src="src/game.js?v=239"></script>
+    <script type="module" src="src/game.js?v=240"></script>
   </body>
 </html>

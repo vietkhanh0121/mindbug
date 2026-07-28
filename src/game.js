@@ -482,6 +482,7 @@ const els = {
   gameOverBanner: document.querySelector("#gameOverBanner"),
   gameOverTitle: document.querySelector("#gameOverTitle"),
   gameOverText: document.querySelector("#gameOverText"),
+  gameOverLobby: document.querySelector("#gameOverLobby"),
   gameOverNewGame: document.querySelector("#gameOverNewGame"),
   gameSettingsButton: document.querySelector("#gameSettingsButton"),
   gameSettingsOverlay: document.querySelector("#gameSettingsOverlay"),
@@ -7810,6 +7811,7 @@ function endHandScrubGesture(event = null) {
 }
 
 els.newGameBtn?.addEventListener("click", newGame);
+els.gameOverLobby?.addEventListener("click", returnToLobby);
 els.gameOverNewGame?.addEventListener("click", requestNewGame);
 els.gameSettingsButton?.addEventListener("click", showGameSettings);
 els.gameSettingsCloseButton?.addEventListener("click", hideGameSettings);
