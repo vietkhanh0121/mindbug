@@ -12,7 +12,7 @@ File này chỉ dùng cho lớp hiển thị tiếng Việt của game. Tên g�
 - Tên: Thanh Long Đồ Sát
 - Tấn công: 7
 - Từ khóa: KHÔNG
-- Hiệu ứng: Khi Tấn công: Tự -1 LP để giết 1 Quái vật của đối thủ
+- Hiệu ứng: Khi Tấn công: Mất 1 LP để giết 1 Quái vật
 
 ## Creep From The Deep
 - Tên: Cà Độc Dược

@@ -885,7 +885,6 @@ function resolveServerAttackAbility(state, ownerIndex, card) {
   const enemyIndex = 1 - ownerIndex;
   const source = { id: card.id, name: card.name };
   const continueAfter = { type: "continue-attack", attackerIndex: ownerIndex, attackerId: card.id };
-  if (card.name === "Count Draculeech" && !enemy.board.length) return { ability: null };
   state.log.unshift(`${card.name} kích hoạt hiệu ứng tấn công.`);
   if (card.name === "Shark Dog") {
     const candidates = enemy.board.filter(target => cardPower(target, state, enemyIndex) >= 6);
@@ -934,12 +933,16 @@ function resolveServerAttackAbility(state, ownerIndex, card) {
   }
   if (card.name === "Count Draculeech") {
     card.countLifeLossAfterAttack = true;
+    const candidates = state.players.flatMap((player, targetOwnerIndex) => (
+      player.board.map(target => ({ target, ownerIndex: targetOwnerIndex }))
+    ));
     return beginServerPending(state, {
       type: "defeat",
       actorIndex: ownerIndex,
-      ownerIndex: enemyIndex,
+      ownerIndex: null,
+      ownerByCardId: Object.fromEntries(candidates.map(candidate => [candidate.target.id, candidate.ownerIndex])),
       sourceCard: source,
-      cardIds: enemy.board.map(target => target.id),
+      cardIds: candidates.map(candidate => candidate.target.id),
       allowSkip: false,
       after: continueAfter
     });

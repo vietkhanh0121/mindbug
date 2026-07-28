@@ -4067,7 +4067,6 @@ async function resolveAttackAbility(card, ownerIndex) {
   if (!CREATURE_ABILITIES_ENABLED) return;
   if (!ATTACK_ABILITY_CARDS.has(card.name)) return;
   const enemy = state.players[1 - ownerIndex];
-  if (card.name === "Count Draculeech" && !enemy.board.length) return;
   announceAbilityActivation(card, ownerIndex, "Tấn công");
   setOpponentAbilityMessage(card, displayAbility(card));
   switch (card.name) {
@@ -4088,10 +4087,18 @@ async function resolveAttackAbility(card, ownerIndex) {
     case "Tusked Exporter":
       await chooseCardsToDiscard(1 - ownerIndex, ownerIndex, card, 1);
       break;
-    case "Count Draculeech":
+    case "Count Draculeech": {
       card.countLifeLossAfterAttack = true;
-      await defeatOne(ownerIndex, enemy.board, "Chọn Quái vật để hạ", false, card);
+      const candidates = state.players.flatMap(player => [...player.board]);
+      showRemoteMessage("Chọn Quái vật để giết", "", { sticky: ownerIndex === 0 });
+      const pickedId = ownerIndex === 0
+        ? await pickDefeatTargetFromBoard(candidates, state.active, null, card, ownerIndex)
+        : randomItem(candidates)?.id;
+      clearRemoteMessage();
+      const targetOwnerIndex = state.players.findIndex(player => player.board.some(target => target.id === pickedId));
+      if (targetOwnerIndex >= 0) await defeatCreature(pickedId, targetOwnerIndex);
       break;
+    }
     case "Majestic Manticore": {
       const creaturesInPlay = state.players.flatMap((player, targetOwnerIndex) => (
         player.board.map(target => ({

@@ -932,7 +932,14 @@ function applySimAttackAbility(sim, attacker, attackerIndex, defenderIndex, help
   }
   if (attacker.name === "Count Draculeech") {
     sim.players[attackerIndex].life -= 1;
-    defeatBestSimTarget(sim, defenderIndex, helpers, () => true);
+    if (defender.board.length) {
+      defeatBestSimTarget(sim, defenderIndex, helpers, () => true);
+    } else {
+      const ownTarget = sim.players[attackerIndex].board
+        .map(card => ({ card, score: scoreSimCard(card, sim, attackerIndex, helpers) }))
+        .sort((a, b) => a.score - b.score)[0]?.card;
+      if (ownTarget) simDefeatCreature(sim, ownTarget.id, attackerIndex, helpers);
+    }
   }
   if (attacker.name === "Majestic Manticore") {
     const creaturesInPlay = sim.players.flatMap((player, ownerIndex) => (
