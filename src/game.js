@@ -1,4 +1,4 @@
-import { createMindbugBot } from "./bot-player.js?v=18";
+import { createMindbugBot } from "./bot-player.js?v=19";
 import { GameAnimations } from "./game-animations.js?v=4";
 import { getSfxVolume, getSfxVolumeLevel, playSoundEffect, setSfxVolumeLevel, unlockAudio } from "./sound.js?v=13";
 import { io } from "socket.io-client";
@@ -9,7 +9,7 @@ const CARD_ASPECT_RATIO = CARD_BASE_WIDTH / CARD_BASE_HEIGHT;
 const APP_DESIGN_WIDTH = 390;
 const APP_DESIGN_HEIGHT = 740;
 const TARGET_MOTION_FPS = 60;
-const APP_ROOT_URL = new URL("../", import.meta.url);
+const APP_ROOT_URL = new URL(import.meta.env.BASE_URL, window.location.origin);
 let motionDurationScale = 1;
 let viewportScaleLockedForKeyboard = false;
 let viewportScaleUnlockTimer = 0;
@@ -3445,7 +3445,9 @@ async function resolvePlayAbility(card, ownerIndex) {
       await loseLife(enemy, enemy.mindbugs, { screenImpact: true });
       break;
     case "Dr. Orange U. Tan": {
-      const activate = ownerIndex === 0 ? await waitForDrOrangeChoice(card, ownerIndex) : owner.life > 1;
+      const activate = ownerIndex === 0
+        ? await waitForDrOrangeChoice(card, ownerIndex)
+        : owner.life > 1 && enemy.board.length - owner.board.length >= 2;
       if (!activate) break;
       await loseLife(owner, 1, { screenImpact: ownerIndex === 0 });
       const returned = [...enemy.board];
@@ -3717,9 +3719,12 @@ async function resolveEvolutionActionAbility(card, ownerIndex) {
     const candidates = [...enemy.board];
     if (!candidates.length) return;
     showRemoteMessage("Chọn Quái vật địch để ép tấn công", "", { sticky: ownerIndex === 0 });
+    const botLethalCountDraculeech = ownerIndex === BOT_INDEX && enemy.life <= 1
+      ? candidates.find(target => target.name === "Count Draculeech" && canAttack(target, enemyIndex))
+      : null;
     const pickedId = ownerIndex === 0
       ? await pickDefeatTargetFromBoard(candidates, ownerIndex, enemyIndex, card, ownerIndex)
-      : (randomItem(candidates)?.id ?? "");
+      : (botLethalCountDraculeech?.id ?? randomItem(candidates)?.id ?? "");
     clearRemoteMessage();
     if (!pickedId) return;
     const forcedAttacker = enemy.board.find(target => target.id === pickedId);

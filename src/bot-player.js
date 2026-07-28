@@ -493,7 +493,7 @@ function generateCandidateActions(sim, activeIndex, helpers) {
   }
 
   for (const card of player.board) {
-    if (canSimUseEvolutionAction(card, sim, activeIndex, helpers)) actions.push({ type: "action", cardId: card.id });
+    if (canSimUseAction(card, sim, activeIndex, helpers)) actions.push({ type: "action", cardId: card.id });
   }
 
   for (const card of player.hand) {
@@ -564,8 +564,8 @@ function applyAction(sim, action, activeIndex, helpers) {
 
   if (action.type === "action") {
     const card = player.board.find(item => item.id === action.cardId);
-    if (card && canSimUseEvolutionAction(card, next, activeIndex, helpers)) {
-      applySimEvolutionAction(next, card.id, activeIndex, helpers);
+    if (card && canSimUseAction(card, next, activeIndex, helpers)) {
+      applySimAction(next, card.id, activeIndex, helpers);
     }
   } else if (action.type === "play") {
     const handIndex = player.hand.findIndex(card => card.id === action.cardId);
@@ -643,7 +643,51 @@ function actionHeuristicScore(sim, action, activeIndex, perspectiveIndex, helper
     score += 40 + playPatternScore(card, sim, activeIndex, helpers);
   }
   score += learnedSelfPlayActionBias(sim, action, activeIndex, helpers);
+  score += learnedComebackActionBias(sim, action, activeIndex, helpers);
   return activeIndex === perspectiveIndex ? score : -score * 0.5;
+}
+
+function learnedComebackActionBias(sim, action, activeIndex, helpers) {
+  const player = sim.players[activeIndex];
+  const enemy = sim.players[1 - activeIndex];
+  const card = action.type === "play"
+    ? player.hand.find(item => item.id === action.cardId)
+    : player.board.find(item => item.id === action.cardId);
+  if (!card) return 0;
+  const lifeDeficit = enemy.life - player.life;
+  const boardDeficit = enemy.board.length - player.board.length;
+  if (lifeDeficit <= 0 && boardDeficit <= 0) return 0;
+  let bias = 0;
+
+  if (action.type === "play") {
+    if (card.name === "Mysterious Mermaid" && lifeDeficit > 0) bias += 55 + lifeDeficit * 20;
+    if (card.name === "Axolotl Healer" && lifeDeficit > 0) bias += 38;
+    if (card.name === "Bugserker" && player.life === 1) bias += 34;
+    if (card.name === "Lone Yeti" && player.board.length === 0) bias += 28;
+    if (card.name === "Brain Fly" && enemy.board.some(
+      target => simPower(target, sim, 1 - activeIndex, helpers) >= 6
+    )) bias += 42;
+    if (card.name === "Kangasaurus Rex" && enemy.board.filter(
+      target => simPower(target, sim, 1 - activeIndex, helpers) <= 4
+    ).length >= 2) bias += 48;
+    if (card.name === "Dr. Orange U. Tan" && player.life > 1 && boardDeficit >= 2) bias += 64;
+    if (card.name === "Turtle Toaster" && enemy.board.filter(target => {
+      const power = simPower(target, sim, 1 - activeIndex, helpers);
+      return power >= 4 && power <= 6;
+    }).length >= 2) bias += 44;
+  }
+  if (action.type === "action") {
+    if (card.name === "Dragon Inn" && boardDeficit > 0) bias += 55;
+    if (card.name === "Infernostrich" && enemy.board.some(
+      target => simPower(target, sim, 1 - activeIndex, helpers) >= 7
+    )) bias += 48;
+  }
+  if (action.type === "attack") {
+    if (card.name === "Turbo Bug" && enemy.life > 1) bias += 90;
+    if (card.name === "Chameleon Sniper" && enemy.life <= 2) bias += 45;
+    if (card.name === "Bugserker" && player.life === 1) bias += 30;
+  }
+  return bias;
 }
 
 function learnedSelfPlayActionBias(sim, action, activeIndex, helpers) {
@@ -750,6 +794,46 @@ function playPatternScore(card, sim, ownerIndex, helpers) {
   if (card.name === "Ferret Bomber" && enemy.hand.length >= 2) score += 28;
   if (card.name === "Hungry Hungry Hamster" && enemy.hand.length) score += 24;
   if (card.name === "Deathweaver" && enemy.hand.some(handCard => handCard.ability !== "NONE")) score += 32;
+  score += simAbilityComboScore(card, sim, ownerIndex, helpers);
+  return score;
+}
+
+function simAbilityComboScore(card, sim, ownerIndex, helpers) {
+  const owner = sim.players[ownerIndex];
+  const enemy = sim.players[1 - ownerIndex];
+  const allies = owner.board;
+  let score = 0;
+  if (card.name === "Snail Thrower") {
+    score += allies.filter(ally => simPower(ally, sim, ownerIndex, helpers) <= 4).length * 14;
+  }
+  if (card.name === "Kitsunsei") {
+    score += allies.filter(ally => !simKeywords(ally, sim, ownerIndex, helpers).includes("SNEAKY")).length * 11;
+  }
+  if (card.name === "Shield Bugs" || card.name === "Urchin Hurler") {
+    score += allies.length * 7;
+  }
+  if (card.name === "Coach Panda" && allies.length === 1) score += 28;
+  if (card.name === "Ferret Pacifier" || card.name === "Elephantopus" || card.name === "Mole Machine") {
+    score += allies.filter(ally => canSimAttack(ally, sim, ownerIndex, helpers)).length * 9;
+  }
+  if (card.name === "Axolotl Healer" && owner.hand.some(handCard => (
+    handCard.name === "Goreagle Alpha" || handCard.name === "Dr. Orange U. Tan"
+  ))) score += 18;
+  if (card.name === "Puffermech" && enemy.board.some(target => simPower(target, sim, 1 - ownerIndex, helpers) >= 8)) score += 24;
+  if (card.name === "Dragon Inn" && owner.board.length < enemy.board.length) score += 26;
+  if (card.name === "Infernostrich" && enemy.board.some(target => simPower(target, sim, 1 - ownerIndex, helpers) >= 7)) score += 28;
+  if (card.name === "Octocopter") {
+    const bestTargetValue = Math.max(0, ...enemy.board.map(
+      target => scoreSimCard(target, sim, 1 - ownerIndex, helpers)
+    ));
+    const sacrificeValue = scoreSimCard(card, sim, ownerIndex, helpers);
+    score += bestTargetValue >= sacrificeValue + 8 ? 28 : -24;
+  }
+  if (card.name === "Cake Trickster") {
+    const countDraculeechLethal = enemy.life <= 1
+      && enemy.board.some(target => target.name === "Count Draculeech" && canSimAttack(target, sim, 1 - ownerIndex, helpers));
+    score += countDraculeechLethal ? 120 : -16;
+  }
   return score;
 }
 
@@ -887,10 +971,26 @@ function canSimAttack(card, sim = null, ownerIndex = -1, helpers = {}) {
   return true;
 }
 
-function canSimUseEvolutionAction(card, sim, ownerIndex, helpers) {
+function canSimUseAction(card, sim, ownerIndex, helpers) {
   if (!helpers.creatureAbilitiesEnabled || !card || !sim || ownerIndex < 0) return false;
   if (card.exhausted) return false;
-  return Boolean(simEvolutionNextName(card.name));
+  if (simEvolutionNextName(card.name)) return true;
+  const enemy = sim.players[1 - ownerIndex];
+  if (card.name === "Cake Trickster") {
+    return enemy.life <= 1
+      && enemy.board.some(target => target.name === "Count Draculeech" && canSimAttack(target, sim, 1 - ownerIndex, helpers));
+  }
+  if (card.name === "Dragon Inn") return sim.players[ownerIndex].board.length < enemy.board.length;
+  if (card.name === "Infernostrich") {
+    return enemy.board.some(target => simPower(target, sim, 1 - ownerIndex, helpers) >= 7);
+  }
+  if (card.name === "Octocopter") {
+    const bestTargetValue = Math.max(0, ...enemy.board.map(
+      target => scoreSimCard(target, sim, 1 - ownerIndex, helpers)
+    ));
+    return bestTargetValue >= scoreSimCard(card, sim, ownerIndex, helpers) + 8;
+  }
+  return false;
 }
 
 function simEvolutionNextName(cardName) {
@@ -905,13 +1005,41 @@ function simEvolutionNextName(cardName) {
   return map[cardName] ?? "";
 }
 
-function applySimEvolutionAction(sim, cardId, ownerIndex, helpers) {
+function applySimAction(sim, cardId, ownerIndex, helpers) {
   const player = sim.players[ownerIndex];
   const enemyIndex = 1 - ownerIndex;
   const enemy = sim.players[enemyIndex];
   const index = player.board.findIndex(card => card.id === cardId);
   if (index < 0) return;
   const card = player.board[index];
+  if (card.name === "Cake Trickster") {
+    const forcedCandidates = enemy.life <= 1
+      ? enemy.board.filter(target => target.name === "Count Draculeech")
+      : enemy.board;
+    const forced = forcedCandidates
+      .filter(target => canSimAttack(target, sim, enemyIndex, helpers))
+      .map(target => ({ target, score: scoreSimCard(target, sim, enemyIndex, helpers) }))
+      .sort((a, b) => b.score - a.score)[0]?.target;
+    card.exhausted = true;
+    if (forced) resolveSimAttack(sim, forced.id, enemyIndex, helpers);
+    return;
+  }
+  if (card.name === "Dragon Inn") {
+    enemy.life -= 1;
+    card.exhausted = true;
+    updateSimWinner(sim);
+    return;
+  }
+  if (card.name === "Infernostrich") {
+    defeatBestSimTarget(sim, enemyIndex, helpers, target => simPower(target, sim, enemyIndex, helpers) >= 7);
+    card.exhausted = true;
+    return;
+  }
+  if (card.name === "Octocopter") {
+    simDefeatCreature(sim, card.id, ownerIndex, helpers);
+    stealBestSimCreature(sim, ownerIndex, enemyIndex, helpers);
+    return;
+  }
   if (card.name === "Cloud Lady") {
     defeatBestSimTarget(sim, enemyIndex, helpers, target => simPower(target, sim, enemyIndex, helpers) <= 4);
   }
@@ -994,6 +1122,33 @@ function applySimPlayAbility(sim, card, ownerIndex, enemyIndex, helpers) {
   }
   if (card.name === "Hungry Hungry Hamster") {
     stealBestSimCards(sim, ownerIndex, enemyIndex, helpers, 1);
+  }
+  if (
+    card.name === "Dr. Orange U. Tan"
+    && sim.players[ownerIndex].life > 1
+    && sim.players[enemyIndex].board.length >= 2
+  ) {
+    sim.players[ownerIndex].life -= 1;
+    while (sim.players[enemyIndex].board.length) {
+      const returned = sim.players[enemyIndex].board.shift();
+      returned.exhausted = false;
+      returned.attacksThisTurn = 0;
+      sim.players[enemyIndex].hand.push(returned);
+    }
+  }
+  if (card.name === "Turtle Toaster") {
+    const targets = sim.players[enemyIndex].board
+      .filter(target => {
+        const power = simPower(target, sim, enemyIndex, helpers);
+        return power >= 4 && power <= 6;
+      })
+      .map(target => ({ target, score: scoreSimCard(target, sim, enemyIndex, helpers) }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 2);
+    for (const { target } of targets) simDefeatCreature(sim, target.id, enemyIndex, helpers);
+  }
+  if (card.name === "Chuckling Chimpborg") {
+    sim.players[enemyIndex].life -= sim.players[enemyIndex].mindbugs;
   }
   updateSimWinner(sim);
 }
