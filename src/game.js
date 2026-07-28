@@ -3803,7 +3803,7 @@ async function markCreatureCannotBlock(ownerIndex, candidates, sourceCard) {
   showRemoteMessage("Chọn Quái vật không thể chặn", "", { sticky: ownerIndex === 0 });
   const enemyIndex = 1 - ownerIndex;
   const pickedId = ownerIndex === 0
-    ? await pickDefeatTargetFromBoard(candidates, state.active, enemyIndex, ownerIndex, sourceCard)
+    ? await pickDefeatTargetFromBoard(candidates, state.active, enemyIndex, sourceCard, ownerIndex)
     : await pickCard(candidates, `${displayCardName(sourceCard)}: chọn Quái vật không thể chặn`, false, { actorIndex: ownerIndex, ownerIndex: enemyIndex });
   clearRemoteMessage();
   const target = state.players[enemyIndex].board.find(card => card.id === pickedId);

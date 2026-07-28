@@ -548,6 +548,25 @@ function refillDiscardPendingPlayer(state, pending) {
 function completeServerPendingAfter(state, pending) {
   pending.drawnToFive = refillDiscardPendingPlayer(state, pending);
   state.pending = null;
+  if (pending.remainingDefeatedCards?.length) {
+    const remainingDefeatedCards = pending.remainingDefeatedCards;
+    const resumedPending = { ...pending, remainingDefeatedCards: [] };
+    const defeatedAbility = resolveServerDefeatedAbilities(state, remainingDefeatedCards, pending.after);
+    if (defeatedAbility.pending) {
+      return {
+        type: "ability-defeated-chain",
+        defeatedIds: defeatedAbility.defeatedIds ?? [],
+        defeatedEffects: defeatedAbility.defeatedEffects ?? []
+      };
+    }
+    const afterEvent = completeServerPendingAfter(state, resumedPending);
+    return {
+      type: "ability-defeated-chain",
+      defeatedIds: defeatedAbility.defeatedIds ?? [],
+      defeatedEffects: defeatedAbility.defeatedEffects ?? [],
+      afterEvent
+    };
+  }
   const evolutionResult = pending.evolve
     ? evolveServerBoardCreature(state, pending.evolve.cardId, pending.evolve.ownerIndex)
     : null;
@@ -663,10 +682,22 @@ function resolveServerPlayAbility(state, ownerIndex, card, after = { type: "end-
     }
     case "Kangasaurus Rex": {
       const defeatedIds = [];
+      const defeatedCards = [];
       for (const target of [...enemy.board]) {
-        if (cardPower(target, state, enemyIndex) <= 4 && removeServerCreature(state, target.id, enemyIndex)) defeatedIds.push(target.id);
+        if (cardPower(target, state, enemyIndex) > 4) continue;
+        const removed = removeServerCreature(state, target.id, enemyIndex);
+        if (!removed) continue;
+        defeatedIds.push(removed.id);
+        defeatedCards.push({ card: removed, ownerIndex: enemyIndex });
       }
-      return { pending: null, ability: "defeat-many", defeatedIds };
+      const defeatedAbility = resolveServerDefeatedAbilities(state, defeatedCards, after);
+      defeatedIds.push(...(defeatedAbility.defeatedIds ?? []));
+      return {
+        pending: defeatedAbility.pending,
+        ability: "defeat-many",
+        defeatedIds,
+        defeatedEffects: defeatedAbility.defeatedEffects ?? []
+      };
     }
     case "Ferret Bomber":
       if (!enemy.hand.length) return { pending: null };
@@ -914,10 +945,22 @@ function resolveServerAttackAbility(state, ownerIndex, card) {
     if (!enemy.board.length) return { ability: null };
     const lowestPower = Math.min(...enemy.board.map(target => cardPower(target, state, enemyIndex)));
     const defeatedIds = [];
+    const defeatedCards = [];
     for (const target of [...enemy.board]) {
-      if (cardPower(target, state, enemyIndex) === lowestPower && removeServerCreature(state, target.id, enemyIndex)) defeatedIds.push(target.id);
+      if (cardPower(target, state, enemyIndex) !== lowestPower) continue;
+      const removed = removeServerCreature(state, target.id, enemyIndex);
+      if (!removed) continue;
+      defeatedIds.push(removed.id);
+      defeatedCards.push({ card: removed, ownerIndex: enemyIndex });
     }
-    return { ability: "defeat-many", defeatedIds };
+    const defeatedAbility = resolveServerDefeatedAbilities(state, defeatedCards, continueAfter);
+    defeatedIds.push(...(defeatedAbility.defeatedIds ?? []));
+    return {
+      pending: defeatedAbility.pending,
+      ability: "defeat-many",
+      defeatedIds,
+      defeatedEffects: defeatedAbility.defeatedEffects ?? []
+    };
   }
   if (card.name === "The Lurker") {
     if (state.players[ownerIndex].board.length > enemy.board.length) {
@@ -1083,6 +1126,7 @@ function resolveServerDefeatedAbilities(state, defeatedCards, after) {
     if (card.name === "Harpy Mother") {
       const candidates = enemy.board.filter(target => cardPower(target, state, enemyIndex) <= 5);
       if (!candidates.length) continue;
+      const remainingDefeatedCards = defeatedQueue.slice(queueIndex + 1);
       return {
         ...beginServerPending(state, {
         type: "steal",
@@ -1094,7 +1138,8 @@ function resolveServerDefeatedAbilities(state, defeatedCards, after) {
         amount: Math.min(2, candidates.length),
         selectedCount: 0,
         allowSkip: true,
-        after
+        after,
+        remainingDefeatedCards
         }),
         defeatedIds: abilityDefeatedIds,
         defeatedEffects
@@ -1102,6 +1147,7 @@ function resolveServerDefeatedAbilities(state, defeatedCards, after) {
     }
     if (card.name === "Explosive Toad") {
       if (!enemy.board.length) continue;
+      const remainingDefeatedCards = defeatedQueue.slice(queueIndex + 1);
       return {
         ...beginServerPending(state, {
         type: "defeat",
@@ -1110,7 +1156,8 @@ function resolveServerDefeatedAbilities(state, defeatedCards, after) {
         sourceCard: source,
         cardIds: enemy.board.map(target => target.id),
         allowSkip: false,
-        after
+        after,
+        remainingDefeatedCards
         }),
         defeatedIds: abilityDefeatedIds,
         defeatedEffects
@@ -1130,6 +1177,7 @@ function resolveServerDefeatedAbilities(state, defeatedCards, after) {
     if (card.name === "Steelhorn") {
       const amount = Math.min(3, enemy.hand.length);
       if (!amount) continue;
+      const remainingDefeatedCards = defeatedQueue.slice(queueIndex + 1);
       return {
         ...beginServerPending(state, {
         type: "discard",
@@ -1138,7 +1186,8 @@ function resolveServerDefeatedAbilities(state, defeatedCards, after) {
         sourceCard: source,
         amount,
         selectedCount: 0,
-        after
+        after,
+        remainingDefeatedCards
         }),
         defeatedIds: abilityDefeatedIds,
         defeatedEffects
@@ -1510,9 +1559,9 @@ function applyGameAction(room, socket, action = {}) {
         return { ok: true, event: { type: "debug-add-board", actorIndex, ownerIndex, cardId: card.id, card, pending: state.pending, pendingActorIndex: defenderIndex } };
       }
       const abilityResult = resolveServerPlayAbility(state, ownerIndex, card, { type: "resume-action", actorIndex: state.active });
-      if (abilityResult.pending) return { ok: true, event: { type: "ability-pending", ability: "play", pending: state.pending, sourceCard: { id: card.id, name: card.name } } };
+      if (abilityResult.pending) return { ok: true, event: { type: "ability-pending", ability: "play", pending: state.pending, sourceCard: { id: card.id, name: card.name }, defeatedIds: abilityResult.defeatedIds ?? [], defeatedEffects: abilityResult.defeatedEffects ?? [] } };
       checkServerGameOver(state);
-      return { ok: true, event: { type: "debug-add-board", actorIndex, ownerIndex, cardId: card.id, card, ability: abilityResult.ability, defeatedIds: abilityResult.defeatedIds ?? [] } };
+      return { ok: true, event: { type: "debug-add-board", actorIndex, ownerIndex, cardId: card.id, card, ability: abilityResult.ability, defeatedIds: abilityResult.defeatedIds ?? [], defeatedEffects: abilityResult.defeatedEffects ?? [] } };
     }
     return { ok: true, event: { type: "debug-add-board", actorIndex, ownerIndex, cardId: card.id, card } };
   }
@@ -1536,11 +1585,11 @@ function applyGameAction(room, socket, action = {}) {
     }
     state.log.unshift(`${player.name} đánh ${card.name}.`);
     const abilityResult = resolveServerPlayAbility(state, actorIndex, card);
-    if (abilityResult.pending) return { ok: true, event: { ...event, type: "ability-pending", ability: abilityResult.ability ?? "play", pending: state.pending, sourceCard: { id: card.id, name: card.name }, controlCardId: abilityResult.controlCardId, fromIndex: abilityResult.fromIndex, toIndex: abilityResult.toIndex } };
+    if (abilityResult.pending) return { ok: true, event: { ...event, type: "ability-pending", ability: abilityResult.ability ?? "play", pending: state.pending, sourceCard: { id: card.id, name: card.name }, controlCardId: abilityResult.controlCardId, fromIndex: abilityResult.fromIndex, toIndex: abilityResult.toIndex, defeatedIds: abilityResult.defeatedIds ?? [], defeatedEffects: abilityResult.defeatedEffects ?? [] } };
     checkServerGameOver(state);
-    if (state.winner !== null) return { ok: true, event: { ...event, ability: abilityResult.ability, defeatedIds: abilityResult.defeatedIds ?? [] } };
+    if (state.winner !== null) return { ok: true, event: { ...event, ability: abilityResult.ability, defeatedIds: abilityResult.defeatedIds ?? [], defeatedEffects: abilityResult.defeatedEffects ?? [] } };
     endServerTurn(state);
-    return { ok: true, event: { ...event, ability: abilityResult.ability, defeatedIds: abilityResult.defeatedIds ?? [] } };
+    return { ok: true, event: { ...event, ability: abilityResult.ability, defeatedIds: abilityResult.defeatedIds ?? [], defeatedEffects: abilityResult.defeatedEffects ?? [] } };
   }
   if (type === "mindbug-choice") {
     const pending = state.pending;
@@ -1561,11 +1610,11 @@ function applyGameAction(room, socket, action = {}) {
       state.log.unshift(`${defender.name} Cướp ${card.name}.`);
       const stealAfter = pending.after ?? { type: "mindbug-extra", playedByIndex: playedBy };
       const abilityResult = resolveServerPlayAbility(state, actorIndex, card, stealAfter);
-      if (abilityResult.pending) return { ok: true, event: { type: "mindbug-steal", actorIndex, playedByIndex: playedBy, cardId: card.id, card, pending: state.pending, ability: abilityResult.ability, controlCardId: abilityResult.controlCardId, fromIndex: abilityResult.fromIndex, toIndex: abilityResult.toIndex } };
+      if (abilityResult.pending) return { ok: true, event: { type: "mindbug-steal", actorIndex, playedByIndex: playedBy, cardId: card.id, card, pending: state.pending, ability: abilityResult.ability, controlCardId: abilityResult.controlCardId, fromIndex: abilityResult.fromIndex, toIndex: abilityResult.toIndex, defeatedIds: abilityResult.defeatedIds ?? [], defeatedEffects: abilityResult.defeatedEffects ?? [] } };
       if (pending.after) {
         checkServerGameOver(state);
         const afterEvent = state.winner === null ? completeServerPendingAfter(state, pending) : null;
-        return { ok: true, event: { type: "mindbug-steal", actorIndex, playedByIndex: playedBy, cardId: card.id, card, ability: abilityResult.ability, defeatedIds: abilityResult.defeatedIds ?? [], afterEvent } };
+        return { ok: true, event: { type: "mindbug-steal", actorIndex, playedByIndex: playedBy, cardId: card.id, card, ability: abilityResult.ability, defeatedIds: abilityResult.defeatedIds ?? [], defeatedEffects: abilityResult.defeatedEffects ?? [], afterEvent } };
       }
       state.phase = "action";
       state.pending = null;
@@ -1575,21 +1624,21 @@ function applyGameAction(room, socket, action = {}) {
       state.extraTurnSource = "mindbug";
       checkServerGameOver(state);
       checkServerActionLoss(state);
-      return { ok: true, event: { type: "mindbug-steal", actorIndex, playedByIndex: playedBy, cardId: card.id, card, ability: abilityResult.ability, defeatedIds: abilityResult.defeatedIds ?? [] } };
+      return { ok: true, event: { type: "mindbug-steal", actorIndex, playedByIndex: playedBy, cardId: card.id, card, ability: abilityResult.ability, defeatedIds: abilityResult.defeatedIds ?? [], defeatedEffects: abilityResult.defeatedEffects ?? [] } };
     }
     state.phase = "action";
     state.pending = null;
     state.log.unshift(`${defender.name} không Cướp.`);
     const abilityResult = resolveServerPlayAbility(state, playedBy, card, pending.after);
-    if (abilityResult.pending) return { ok: true, event: { type: "mindbug-pass", actorIndex, playedByIndex: playedBy, cardId: card.id, card, pending: state.pending, ability: abilityResult.ability, controlCardId: abilityResult.controlCardId, fromIndex: abilityResult.fromIndex, toIndex: abilityResult.toIndex } };
+    if (abilityResult.pending) return { ok: true, event: { type: "mindbug-pass", actorIndex, playedByIndex: playedBy, cardId: card.id, card, pending: state.pending, ability: abilityResult.ability, controlCardId: abilityResult.controlCardId, fromIndex: abilityResult.fromIndex, toIndex: abilityResult.toIndex, defeatedIds: abilityResult.defeatedIds ?? [], defeatedEffects: abilityResult.defeatedEffects ?? [] } };
     checkServerGameOver(state);
-    if (state.winner !== null) return { ok: true, event: { type: "mindbug-pass", actorIndex, playedByIndex: playedBy, cardId: card.id, card, ability: abilityResult.ability, defeatedIds: abilityResult.defeatedIds ?? [] } };
+    if (state.winner !== null) return { ok: true, event: { type: "mindbug-pass", actorIndex, playedByIndex: playedBy, cardId: card.id, card, ability: abilityResult.ability, defeatedIds: abilityResult.defeatedIds ?? [], defeatedEffects: abilityResult.defeatedEffects ?? [] } };
     if (pending.after) {
       const afterEvent = completeServerPendingAfter(state, pending);
-      return { ok: true, event: { type: "mindbug-pass", actorIndex, playedByIndex: playedBy, cardId: card.id, card, ability: abilityResult.ability, defeatedIds: abilityResult.defeatedIds ?? [], afterEvent } };
+      return { ok: true, event: { type: "mindbug-pass", actorIndex, playedByIndex: playedBy, cardId: card.id, card, ability: abilityResult.ability, defeatedIds: abilityResult.defeatedIds ?? [], defeatedEffects: abilityResult.defeatedEffects ?? [], afterEvent } };
     }
     endServerTurn(state);
-    return { ok: true, event: { type: "mindbug-pass", actorIndex, playedByIndex: playedBy, cardId: card.id, card, ability: abilityResult.ability, defeatedIds: abilityResult.defeatedIds ?? [] } };
+    return { ok: true, event: { type: "mindbug-pass", actorIndex, playedByIndex: playedBy, cardId: card.id, card, ability: abilityResult.ability, defeatedIds: abilityResult.defeatedIds ?? [], defeatedEffects: abilityResult.defeatedEffects ?? [] } };
   }
   if (type === "discard-choice") {
     const pending = state.pending;
@@ -1985,7 +2034,7 @@ function applyGameAction(room, socket, action = {}) {
     const attackAbilityResult = resolveServerAttackAbility(state, attackerIndex, attacker);
     if (attackAbilityResult?.pending) {
       state.pending.forcedActionOwner = actorIndex;
-      return { ok: true, event: { type: "ability-pending", ability: "attack", pending: state.pending, sourceCard: { id: attacker.id, name: attacker.name } } };
+      return { ok: true, event: { type: "ability-pending", ability: "attack", pending: state.pending, sourceCard: { id: attacker.id, name: attacker.name }, defeatedIds: attackAbilityResult.defeatedIds ?? [], defeatedEffects: attackAbilityResult.defeatedEffects ?? [] } };
     }
     const result = continueServerAttackAfterAbility(state, attackerIndex, attacker.id);
     if (state.pending) state.pending.forcedActionOwner = actorIndex;
@@ -2005,13 +2054,14 @@ function applyGameAction(room, socket, action = {}) {
     const attackAbilityResult = resolveServerAttackAbility(state, actorIndex, attacker);
     if (attackAbilityResult?.pending) {
       if (forcedActionOwner !== undefined) state.pending.forcedActionOwner = forcedActionOwner;
-      return { ok: true, event: { type: "ability-pending", ability: "attack", pending: state.pending, sourceCard: { id: attacker.id, name: attacker.name } } };
+      return { ok: true, event: { type: "ability-pending", ability: "attack", pending: state.pending, sourceCard: { id: attacker.id, name: attacker.name }, defeatedIds: attackAbilityResult.defeatedIds ?? [], defeatedEffects: attackAbilityResult.defeatedEffects ?? [] } };
     }
     const abilityEventData = attackAbilityResult?.ability
       ? {
         ability: attackAbilityResult.ability,
         sourceCard: { id: attacker.id, name: attacker.name },
         defeatedIds: attackAbilityResult.defeatedIds ?? [],
+        defeatedEffects: attackAbilityResult.defeatedEffects ?? [],
         discardAll: attackAbilityResult.discardAll ?? null,
         drawnToFive: attackAbilityResult.drawnToFive ?? null
       }
