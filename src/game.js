@@ -727,7 +727,10 @@ function makeCard([name, count, power, keywords, ability]) {
 }
 
 function makeDeck() {
-  const deckSpecs = [...RAW_CARDS, ...BEYOND_EVOLUTION_CARDS];
+  const deckSpecs = [
+    ...RAW_CARDS.filter(([name]) => !EVOLUTION_INFO[name]),
+    ...BEYOND_EVOLUTION_CARDS
+  ];
   const cards = [];
   for (const spec of deckSpecs) {
     for (let i = 0; i < spec[1]; i += 1) cards.push(makeCard(spec));
@@ -830,6 +833,7 @@ function renderLobby() {
 function renderLobbyHeroCards() {
   if (!els.lobbyHeroCards || els.lobbyHeroCards.childElementCount) return;
   const cardNames = shuffle(ALL_CARD_SPECS.map(card => card[0]))
+    .filter(name => !EVOLUTION_INFO[name])
     .filter(name => cardSpriteSrc(name))
     .slice(0, 3);
   els.lobbyHeroCards.innerHTML = cardNames.map(name => (
