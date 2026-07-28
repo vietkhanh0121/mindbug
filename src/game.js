@@ -9,6 +9,7 @@ const CARD_ASPECT_RATIO = CARD_BASE_WIDTH / CARD_BASE_HEIGHT;
 const APP_DESIGN_WIDTH = 390;
 const APP_DESIGN_HEIGHT = 740;
 const TARGET_MOTION_FPS = 60;
+const APP_ROOT_URL = new URL("../", import.meta.url);
 let motionDurationScale = 1;
 let viewportScaleLockedForKeyboard = false;
 let viewportScaleUnlockTimer = 0;
@@ -256,13 +257,13 @@ const CARD_SPRITE_FILES = {
 };
 
 const STATIC_PRELOAD_ASSETS = [
-  "assets/background/map.jpg",
-  "assets/cards/card_back.png",
-  "assets/ui/win.png",
-  "assets/ui/lose.png"
+  new URL("assets/background/map.jpg", APP_ROOT_URL).href,
+  new URL("assets/cards/card_back.png", APP_ROOT_URL).href,
+  new URL("assets/ui/win.png", APP_ROOT_URL).href,
+  new URL("assets/ui/lose.png", APP_ROOT_URL).href
 ];
 const WATERDROP_FX_FRAMES = Array.from({ length: 9 }, (_, index) => (
-  `assets/fx/waterdrop/frame_${String(index).padStart(3, "0")}.png`
+  new URL(`assets/fx/waterdrop/frame_${String(index).padStart(3, "0")}.png`, APP_ROOT_URL).href
 ));
 
 const KEYWORD_LABELS = {
@@ -759,7 +760,7 @@ function normalizeAvatarId(avatarId, fallback = 1) {
 }
 
 function avatarUrl(avatarId) {
-  return `assets/avatars/${normalizeAvatarId(avatarId)}.png`;
+  return new URL(`assets/avatars/${normalizeAvatarId(avatarId)}.png`, APP_ROOT_URL).href;
 }
 
 function randomAvatarId(excludeId = 0) {
@@ -6868,7 +6869,7 @@ function cardSpriteUrl(card) {
 function cardSpriteSrc(cardName) {
   const fileName = CARD_SPRITE_FILES[cardName];
   if (!fileName) return "";
-  return encodeURI(`assets/cards/${fileName}`);
+  return new URL(`assets/cards/${encodeURIComponent(fileName)}`, APP_ROOT_URL).href;
 }
 
 function allGameAssetUrls() {
