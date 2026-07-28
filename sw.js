@@ -1,4 +1,4 @@
-const CACHE_NAME = "cuop-rau-qua-v2";
+const CACHE_NAME = "cuop-rau-qua-v4";
 const APP_SHELL = [
   "./",
   "./index.html",

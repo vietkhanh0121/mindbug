@@ -13,7 +13,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="./assets/icons/apple-touch-icon.png">
     <link rel="icon" type="image/png" sizes="192x192" href="./assets/icons/icon-192.png">
     <title>Cướp Rau Quả</title>
-    <link rel="stylesheet" href="styles.css?v=141">
+    <link rel="stylesheet" href="styles.css?v=143">
   </head>
   <body>
     <main class="app">
@@ -170,6 +170,24 @@
             <button id="lobbySettingsCloseButton" class="lobbyStartBtn" type="button">Đóng</button>
           </section>
         </div>
+
+        <div id="lobbyPreloadOverlay" class="lobbyPreloadOverlay" aria-live="polite" hidden>
+          <section class="lobbyPreloadPanel">
+            <strong>Đang tải dữ liệu game</strong>
+            <div
+              id="lobbyPreloadBar"
+              class="lobbyPreloadBar"
+              role="progressbar"
+              aria-label="Tiến trình tải dữ liệu game"
+              aria-valuemin="0"
+              aria-valuemax="100"
+              aria-valuenow="0"
+            >
+              <i id="lobbyPreloadFill"></i>
+            </div>
+            <span id="lobbyPreloadPercent">0%</span>
+          </section>
+        </div>
       </section>
     </main>
 
@@ -258,6 +276,6 @@
     </dialog>
 
     <script type="module" src="src/force-reload.js?v=27"></script>
-    <script type="module" src="src/game.js?v=235"></script>
+    <script type="module" src="src/game.js?v=237"></script>
   </body>
 </html>

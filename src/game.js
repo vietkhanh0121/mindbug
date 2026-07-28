@@ -10,6 +10,8 @@ const APP_DESIGN_WIDTH = 390;
 const APP_DESIGN_HEIGHT = 740;
 const TARGET_MOTION_FPS = 60;
 let motionDurationScale = 1;
+let viewportScaleLockedForKeyboard = false;
+let viewportScaleUnlockTimer = 0;
 
 const RAW_CARDS = [
   ["Shark Dog", 1, 4, ["HUNTER"], "Attack: Defeat an enemy creature with power 6 or more"],
@@ -426,6 +428,10 @@ const els = {
   lobbySfxVolumeValue: document.querySelector("#lobbySfxVolumeValue"),
   lobbyTitle: document.querySelector("#lobbyTitle"),
   lobbySubtitle: document.querySelector("#lobbySubtitle"),
+  lobbyPreloadOverlay: document.querySelector("#lobbyPreloadOverlay"),
+  lobbyPreloadBar: document.querySelector("#lobbyPreloadBar"),
+  lobbyPreloadFill: document.querySelector("#lobbyPreloadFill"),
+  lobbyPreloadPercent: document.querySelector("#lobbyPreloadPercent"),
   lobbyProfileView: document.querySelector("#lobbyProfileView"),
   lobbyProfileCloseButton: document.querySelector("#lobbyProfileCloseButton"),
   lobbyModeView: document.querySelector("#lobbyModeView"),
@@ -629,6 +635,10 @@ function configureBotDifficulty() {
 }
 
 function syncAppScale() {
+  if (viewportScaleLockedForKeyboard) {
+    window.requestAnimationFrame(() => syncOpponentPendingAbilityPointer());
+    return;
+  }
   const viewport = window.visualViewport;
   const viewportWidth = viewport?.width ?? window.innerWidth;
   const viewportHeight = viewport?.height ?? window.innerHeight;
@@ -6894,29 +6904,50 @@ async function preloadGameFonts() {
   ]);
 }
 
-function setLobbyAssetLoading(isLoading) {
+function setLobbyAssetLoading(isLoading, loaded = 0, total = 1) {
   for (const button of [els.lobbyStartButton, els.lobbyModeSolo, els.lobbyModeDuel, els.lobbyCreateRoomButton, els.lobbyJoinRoomButton]) {
     if (button) button.disabled = isLoading;
   }
-  if (els.lobbySubtitle && isLoading) {
-    els.lobbySubtitle.hidden = false;
-    els.lobbySubtitle.textContent = "Đang tải assets...";
-  }
+  const progress = total > 0 ? Math.min(100, Math.round((loaded / total) * 100)) : 100;
+  if (els.lobbyPreloadOverlay) els.lobbyPreloadOverlay.hidden = !isLoading;
+  if (els.lobbyPreloadFill) els.lobbyPreloadFill.style.width = `${progress}%`;
+  if (els.lobbyPreloadPercent) els.lobbyPreloadPercent.textContent = `${progress}%`;
+  if (els.lobbyPreloadBar) els.lobbyPreloadBar.setAttribute("aria-valuenow", String(progress));
 }
 
 async function ensureGameAssetsPreloaded({ showLobbyStatus = false } = {}) {
   if (gameAssetsPreloaded) return;
   if (!gameAssetsPreloadPromise) {
     gameAssetsPreloadPromise = (async () => {
+      const assets = allGameAssetUrls();
+      const total = assets.length + 1;
+      let loaded = 0;
+      const startedAt = performance.now();
+      const updateProgress = () => {
+        if (isLobbyVisible()) setLobbyAssetLoading(true, loaded, total);
+      };
+      updateProgress();
       await preloadGameFonts();
-      await Promise.allSettled(allGameAssetUrls().map(preloadImage));
+      loaded += 1;
+      updateProgress();
+      await Promise.allSettled(assets.map(async url => {
+        await preloadImage(url);
+        loaded += 1;
+        updateProgress();
+      }));
+      const remainingMs = 550 - (performance.now() - startedAt);
+      if (remainingMs > 0) {
+        await new Promise(resolve => window.setTimeout(resolve, remainingMs));
+      }
+      await new Promise(resolve => window.setTimeout(resolve, 120));
       gameAssetsPreloaded = true;
+      setLobbyAssetLoading(false, total, total);
     })();
   }
-  if (showLobbyStatus) setLobbyAssetLoading(true);
+  if (showLobbyStatus && isLobbyVisible()) setLobbyAssetLoading(true);
   await gameAssetsPreloadPromise.catch(() => {});
   if (showLobbyStatus) {
-    setLobbyAssetLoading(false);
+    setLobbyAssetLoading(false, 1, 1);
     updateLobbyScreen();
   }
 }
@@ -7935,6 +7966,21 @@ window.addEventListener("pointercancel", event => endHandScrubGesture(event));
 window.addEventListener("resize", syncAppScale);
 window.visualViewport?.addEventListener("resize", syncAppScale);
 window.visualViewport?.addEventListener("scroll", syncAppScale);
+document.addEventListener("focusin", event => {
+  if (!event.target.matches?.("input, textarea, [contenteditable='true']")) return;
+  window.clearTimeout(viewportScaleUnlockTimer);
+  viewportScaleLockedForKeyboard = true;
+});
+document.addEventListener("focusout", event => {
+  if (!event.target.matches?.("input, textarea, [contenteditable='true']")) return;
+  window.clearTimeout(viewportScaleUnlockTimer);
+  viewportScaleUnlockTimer = window.setTimeout(() => {
+    const activeElement = document.activeElement;
+    if (activeElement?.matches?.("input, textarea, [contenteditable='true']")) return;
+    viewportScaleLockedForKeyboard = false;
+    syncAppScale();
+  }, 420);
+});
 window.addEventListener("keydown", event => {
   if (!event.metaKey || event.ctrlKey || event.altKey) return;
   const key = event.key.toLowerCase();
@@ -7963,6 +8009,6 @@ loadVietnameseCardText().finally(async () => {
   await calibrateMotionDelta();
   renderLobby();
   window.setTimeout(() => {
-    ensureGameAssetsPreloaded().catch(() => {});
+    ensureGameAssetsPreloaded({ showLobbyStatus: true }).catch(() => {});
   }, 60);
 });

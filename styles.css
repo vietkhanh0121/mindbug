@@ -48,6 +48,7 @@
 html,
 body {
   height: 100%;
+  -webkit-text-size-adjust: 100%;
 }
 
 body {
@@ -256,6 +257,70 @@ body.lobbyOpen .gameConfirmOverlay {
 
 .lobbyView.hidden {
   display: none;
+}
+
+.lobbyPreloadOverlay {
+  align-items: center;
+  background: rgba(3, 10, 6, .86);
+  display: flex;
+  inset: 0;
+  justify-content: center;
+  padding: 24px;
+  position: absolute;
+  z-index: 20;
+}
+
+.lobbyPreloadOverlay[hidden] {
+  display: none;
+}
+
+.lobbyPreloadPanel {
+  align-items: center;
+  background: #102417;
+  border: 4px solid #5e744e;
+  box-shadow:
+    inset 4px 4px 0 rgba(255, 255, 255, .07),
+    7px 7px 0 rgba(0, 0, 0, .72);
+  display: grid;
+  gap: 14px;
+  justify-items: center;
+  padding: 24px 20px;
+  width: min(100%, 310px);
+}
+
+.lobbyPreloadPanel strong {
+  color: #fff0a8;
+  font-size: 18px;
+  line-height: 1.2;
+  text-align: center;
+}
+
+.lobbyPreloadBar {
+  background: #07100c;
+  border: 3px solid #315a35;
+  box-shadow: inset 3px 3px 0 rgba(0, 0, 0, .58);
+  height: 28px;
+  overflow: hidden;
+  padding: 3px;
+  width: 100%;
+}
+
+.lobbyPreloadBar i {
+  background:
+    linear-gradient(90deg, rgba(255, 255, 255, .18) 0 6px, transparent 6px 12px),
+    #f2c94c;
+  background-size: 12px 100%;
+  box-shadow: inset 0 -4px 0 rgba(126, 83, 8, .34);
+  display: block;
+  height: 100%;
+  transition: width 90ms linear;
+  width: 0;
+}
+
+.lobbyPreloadPanel > span {
+  color: #fff;
+  font-size: 22px;
+  line-height: 1;
 }
 
 .lobbyContent {
