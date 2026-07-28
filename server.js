@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { writeFile } from "node:fs/promises";
 import { Server } from "socket.io";
 import { createServer as createViteServer } from "vite";
 
@@ -10,6 +11,16 @@ const CLIENT_ORIGINS = String(process.env.CLIENT_ORIGIN || "")
 const rooms = new Map();
 const abandonedSessions = new Map();
 const DISCONNECT_GRACE_MS = 60_000;
+const BOT_LEARNING_FILE_URL = new URL("./bot-learning-data.json", import.meta.url);
+let botLearningWriteQueue = Promise.resolve();
+
+function isAllowedClientOrigin(origin = "") {
+  const normalized = String(origin || "").replace(/\/+$/, "");
+  return !origin
+    || CLIENT_ORIGINS.includes(normalized)
+    || /^https:\/\/[^/]+\.github\.io$/i.test(normalized)
+    || /^https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?$/i.test(normalized);
+}
 const STARTING_LIFE = 3;
 const STARTING_MINDBUGS = 2;
 const HAND_SIZE = 5;
@@ -2332,6 +2343,66 @@ httpServer.on("request", (request, response) => {
   if (request.url === "/health") {
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
     response.end(JSON.stringify({ ok: true }));
+    return;
+  }
+  if (request.url === "/api/bot-learning") {
+    request.mindbugHandled = true;
+    const origin = String(request.headers.origin || "");
+    if (!isAllowedClientOrigin(origin)) {
+      response.writeHead(403, { "content-type": "application/json; charset=utf-8" });
+      response.end(JSON.stringify({ ok: false }));
+      return;
+    }
+    if (origin) {
+      response.setHeader("access-control-allow-origin", origin);
+      response.setHeader("vary", "Origin");
+    }
+    response.setHeader("access-control-allow-methods", "POST, OPTIONS");
+    response.setHeader("access-control-allow-headers", "content-type");
+    if (request.method === "OPTIONS") {
+      response.writeHead(204);
+      response.end();
+      return;
+    }
+    if (request.method !== "POST") {
+      response.writeHead(405, { "content-type": "application/json; charset=utf-8" });
+      response.end(JSON.stringify({ ok: false }));
+      return;
+    }
+    let body = "";
+    request.setEncoding("utf8");
+    request.on("data", chunk => {
+      body += chunk;
+      if (body.length > 2_000_000) request.destroy();
+    });
+    request.on("end", () => {
+      try {
+        const payload = JSON.parse(body);
+        if (!payload || typeof payload !== "object" || !Array.isArray(payload.games) || typeof payload.strategyMemory !== "object") {
+          throw new Error("Invalid learning payload");
+        }
+        const normalized = {
+          version: 1,
+          updatedAt: new Date().toISOString(),
+          games: payload.games.slice(-100),
+          strategyMemory: payload.strategyMemory
+        };
+        botLearningWriteQueue = botLearningWriteQueue
+          .catch(() => {})
+          .then(() => writeFile(BOT_LEARNING_FILE_URL, `${JSON.stringify(normalized, null, 2)}\n`, "utf8"));
+        botLearningWriteQueue.then(() => {
+          response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+          response.end(JSON.stringify({ ok: true, games: normalized.games.length }));
+        }).catch(() => {
+          response.writeHead(500, { "content-type": "application/json; charset=utf-8" });
+          response.end(JSON.stringify({ ok: false }));
+        });
+      } catch {
+        response.writeHead(400, { "content-type": "application/json; charset=utf-8" });
+        response.end(JSON.stringify({ ok: false, message: "Dữ liệu học không hợp lệ." }));
+      }
+    });
+    return;
   }
 });
 const vite = await createViteServer({
@@ -2342,16 +2413,13 @@ const vite = await createViteServer({
   appType: "spa"
 });
 httpServer.on("request", (request, response) => {
-  if (!response.writableEnded) vite.middlewares(request, response);
+  if (!request.mindbugHandled && !response.writableEnded) vite.middlewares(request, response);
 });
 const io = new Server(httpServer, {
   cors: {
     origin(origin, callback) {
       if (
-        !origin
-        || CLIENT_ORIGINS.includes(origin.replace(/\/+$/, ""))
-        || /^https:\/\/[^/]+\.github\.io$/i.test(origin)
-        || /^https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?$/i.test(origin)
+        isAllowedClientOrigin(origin)
       ) {
         callback(null, true);
         return;

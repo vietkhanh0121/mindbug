@@ -11,6 +11,7 @@ export default defineConfig({
         cpSync(resolve("assets"), resolve("dist/assets"), { recursive: true });
         cpSync(resolve("manifest.webmanifest"), resolve("dist/manifest.webmanifest"));
         cpSync(resolve("sw.js"), resolve("dist/sw.js"));
+        cpSync(resolve("bot-learning-data.json"), resolve("dist/bot-learning-data.json"));
         const indexPath = resolve("dist/index.html");
         const indexHtml = readFileSync(indexPath, "utf8").replace(
           /href="\.\/assets\/manifest-[^"]+\.webmanifest"/,

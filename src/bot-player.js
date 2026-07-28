@@ -6,6 +6,7 @@ export function createMindbugBot(botIndex = 1, config = {}) {
   const branchLimit = config.branchLimit ?? 7;
   const mindbugDepth = config.mindbugDepth ?? Math.max(2, searchDepth - 1);
   const memory = loadStrategyMemory(botIndex);
+  let learningEpisode = [];
 
   function chooseTurnAction(state, helpers) {
     try {
@@ -21,6 +22,13 @@ export function createMindbugBot(botIndex = 1, config = {}) {
     const options = context.options || [];
 
     if (context.type === "mindbug") {
+      if (
+        helpers.creatureAbilitiesEnabled
+        && context.card?.name === "Goreagle Alpha"
+        && state.players[botIndex]?.life <= 1
+      ) {
+        return "pass";
+      }
       return chooseMindbug(context.card, state, helpers, botIndex, { searchLimitMs, mindbugDepth, branchLimit });
     }
 
@@ -75,7 +83,137 @@ export function createMindbugBot(botIndex = 1, config = {}) {
     return null;
   }
 
-  return { botIndex, delay, afterActionDelay, searchLimitMs, searchDepth, branchLimit, chooseTurnAction, chooseOption };
+  function startLearningGame() {
+    learningEpisode = [];
+  }
+
+  function recordGameAction(state, action, actorIndex) {
+    if (!state || !action || action.type === "pass" || !Number.isInteger(actorIndex)) return;
+    const perspective = actorIndex === botIndex ? cloneState(state) : mirrorStateForBot(state, actorIndex, botIndex);
+    const signature = strategySignature(perspective, action, botIndex);
+    const actor = state.players[actorIndex];
+    const card = action.type === "play"
+      ? actor?.hand.find(item => item.id === action.cardId)
+      : actor?.board.find(item => item.id === action.cardId);
+    learningEpisode.push({
+      signature,
+      actorIndex,
+      actionType: action.type,
+      cardName: card?.name ?? "",
+      actorLife: actor?.life ?? 0,
+      enemyLife: state.players[1 - actorIndex]?.life ?? 0,
+      recordedAt: Date.now()
+    });
+  }
+
+  function completeLearningGame(winnerIndex) {
+    if (!learningEpisode.length || !Number.isInteger(winnerIndex)) {
+      learningEpisode = [];
+      return Number(memory.completedGames ?? 0);
+    }
+    learnFromCompletedGame(memory, learningEpisode, winnerIndex, botIndex);
+    learningEpisode = [];
+    return Number(memory.completedGames ?? 0);
+  }
+
+  return {
+    botIndex,
+    delay,
+    afterActionDelay,
+    searchLimitMs,
+    searchDepth,
+    branchLimit,
+    chooseTurnAction,
+    chooseOption,
+    startLearningGame,
+    recordGameAction,
+    completeLearningGame
+  };
+}
+
+export function runBotSelfPlay(initialState, helpers = {}, config = {}) {
+  const searchLimitMs = config.searchLimitMs ?? 90;
+  const searchDepth = config.searchDepth ?? 3;
+  const branchLimit = config.branchLimit ?? 6;
+  const maxTurns = config.maxTurns ?? 120;
+  const memory = config.memory ?? {
+    version: 1,
+    botIndex: "self-play",
+    completedGames: 0,
+    entries: {}
+  };
+  let sim = cloneState(initialState);
+  const actions = [];
+  const learningEpisode = [];
+
+  readySimTurn(sim, sim.active);
+  updateSimActionLoss(sim, sim.active, helpers);
+  while (sim.winner === null && actions.length < maxTurns) {
+    const actorIndex = sim.active;
+    const actor = sim.players[actorIndex];
+    const action = chooseOptimalTurnAction(sim, helpers, actorIndex, {
+      searchLimitMs,
+      searchDepth,
+      branchLimit,
+      memory
+    });
+    const source = action.type === "play"
+      ? actor.hand.find(card => card.id === action.cardId)
+      : actor.board.find(card => card.id === action.cardId);
+    if (action.type !== "pass") {
+      learningEpisode.push({
+        signature: strategySignature(sim, action, actorIndex),
+        actorIndex,
+        actionType: action.type,
+        cardName: source?.name ?? "",
+        actorLife: actor.life,
+        enemyLife: sim.players[1 - actorIndex].life,
+        recordedAt: Date.now()
+      });
+    }
+    const before = {
+      life: sim.players.map(player => player.life),
+      board: sim.players.map(player => player.board.length),
+      hand: sim.players.map(player => player.hand.length),
+      mindbugs: sim.players.map(player => player.mindbugs)
+    };
+    const next = applyAction(sim, action, actorIndex, helpers);
+    actions.push({
+      turn: actions.length + 1,
+      actorIndex,
+      type: action.type,
+      card: source?.name ?? "",
+      before,
+      after: {
+        life: next.players.map(player => player.life),
+        board: next.players.map(player => player.board.length),
+        hand: next.players.map(player => player.hand.length),
+        mindbugs: next.players.map(player => player.mindbugs)
+      }
+    });
+    sim = next;
+  }
+  if (config.learn !== false && Number.isInteger(sim.winner)) {
+    learnFromCompletedGame(memory, learningEpisode, sim.winner, 0);
+  }
+
+  return {
+    winnerIndex: sim.winner,
+    ended: sim.winner !== null,
+    turns: actions.length,
+    actions,
+    finalState: cloneState(sim),
+    memory
+  };
+}
+
+function mirrorStateForBot(state, actorIndex, botIndex) {
+  const mirrored = cloneState(state);
+  if (actorIndex === botIndex) return mirrored;
+  mirrored.players = [mirrored.players[1], mirrored.players[0]];
+  mirrored.active = botIndex;
+  if (Number.isInteger(mirrored.winner)) mirrored.winner = 1 - mirrored.winner;
+  return mirrored;
 }
 
 function chooseOptimalTurnAction(state, helpers, botIndex, config) {
@@ -504,7 +642,43 @@ function actionHeuristicScore(sim, action, activeIndex, perspectiveIndex, helper
     if (!card) return score;
     score += 40 + playPatternScore(card, sim, activeIndex, helpers);
   }
+  score += learnedSelfPlayActionBias(sim, action, activeIndex, helpers);
   return activeIndex === perspectiveIndex ? score : -score * 0.5;
+}
+
+function learnedSelfPlayActionBias(sim, action, activeIndex, helpers) {
+  const player = sim.players[activeIndex];
+  const enemy = sim.players[1 - activeIndex];
+  const card = action.type === "play"
+    ? player.hand.find(item => item.id === action.cardId)
+    : player.board.find(item => item.id === action.cardId);
+  if (!card) return 0;
+  const keywords = simKeywords(card, sim, activeIndex, helpers);
+  let bias = 0;
+
+  // Self-play consistently rewards taking tempo and keeping durable pressure.
+  if (action.type === "attack") {
+    bias += 5;
+    if (keywords.includes("TOUGH")) bias += 6;
+    if (keywords.includes("FRENZY") && enemy.life <= 2) bias += 14;
+    if (keywords.includes("SNEAKY") && !enemy.board.some(
+      blocker => simKeywords(blocker, sim, 1 - activeIndex, helpers).includes("SNEAKY")
+    )) bias += 12;
+  }
+  if (action.type === "play") {
+    if (keywords.includes("TOUGH")) bias += 7;
+    if (keywords.includes("FRENZY")) bias += enemy.life <= 2 ? 12 : 5;
+    if (keywords.includes("SNEAKY") && !enemy.board.some(
+      blocker => simKeywords(blocker, sim, 1 - activeIndex, helpers).includes("SNEAKY")
+    )) bias += 9;
+    // Preserve the final card when another legal action exists, avoiding
+    // endgames lost solely because no action remains.
+    if (player.deck.length === 0 && player.hand.length === 1
+      && player.board.some(boardCard => canSimAttack(boardCard, sim, activeIndex, helpers))) {
+      bias -= 16;
+    }
+  }
+  return bias;
 }
 
 function tacticalActionScore(sim, action, activeIndex, perspectiveIndex, helpers) {
@@ -1019,6 +1193,9 @@ function copySimInto(target, source) {
 function shouldSimMindbug(card, sim, opponentIndex, helpers) {
   const opponent = sim.players[opponentIndex];
   if (opponent.mindbugs <= 0) return false;
+  // Learned from self-play: stealing Goreagle Alpha at 1 LP immediately loses
+  // to its Play cost, so Power alone must never trigger a Mindbug here.
+  if (helpers.creatureAbilitiesEnabled && card.name === "Goreagle Alpha" && opponent.life <= 1) return false;
   const value = scoreSimCard(card, sim, opponentIndex, helpers);
   const playerIndex = 1 - opponentIndex;
   const pressure = opponent.life <= 1 || sim.players[playerIndex].life <= 1;
@@ -1490,7 +1667,9 @@ function strategySignature(sim, action, botIndex) {
 function strategyMemoryBias(memory, sim, action, botIndex) {
   const entry = memory?.entries?.[strategySignature(sim, action, botIndex)];
   if (!entry) return 0;
-  return Math.max(-18, Math.min(18, entry.score / 60));
+  const searchBias = entry.score / 60;
+  const outcomeBias = Number(entry.outcomeScore ?? 0) * Math.min(1, Number(entry.outcomeSamples ?? 0) / 4);
+  return Math.max(-24, Math.min(24, searchBias + outcomeBias));
 }
 
 function rememberStrategy(memory, sim, action, score, botIndex) {
@@ -1503,7 +1682,66 @@ function rememberStrategy(memory, sim, action, score, botIndex) {
   memory.entries[key] = current;
   const entries = Object.entries(memory.entries)
     .sort((a, b) => (b[1].updatedAt ?? 0) - (a[1].updatedAt ?? 0))
-    .slice(0, 80);
+    .slice(0, 300);
   memory.entries = Object.fromEntries(entries);
   saveStrategyMemory(memory);
+}
+
+function learnFromCompletedGame(memory, episode, winnerIndex, botIndex) {
+  const totalMoves = episode.length;
+  const decisiveMoves = [];
+  for (let index = 0; index < totalMoves; index += 1) {
+    const move = episode[index];
+    const distanceFromEnd = totalMoves - 1 - index;
+    if (distanceFromEnd > 11) continue;
+    const didWin = move.actorIndex === winnerIndex;
+    const recency = Math.exp(-distanceFromEnd / 4);
+    const reward = (didWin ? 14 : -8) * recency;
+    const entry = memory.entries[move.signature] ?? { score: 0, uses: 0 };
+    const samples = Number(entry.outcomeSamples ?? 0);
+    entry.outcomeScore = ((Number(entry.outcomeScore ?? 0) * Math.min(samples, 11)) + reward)
+      / (Math.min(samples, 11) + 1);
+    entry.outcomeSamples = Math.min(999, samples + 1);
+    entry.wins = Number(entry.wins ?? 0) + (didWin ? 1 : 0);
+    entry.losses = Number(entry.losses ?? 0) + (didWin ? 0 : 1);
+    entry.updatedAt = Date.now();
+    memory.entries[move.signature] = entry;
+    if (didWin && distanceFromEnd <= 7) {
+      decisiveMoves.push({
+        action: move.actionType,
+        card: move.cardName,
+        actorLife: move.actorLife,
+        enemyLife: move.enemyLife,
+        distanceFromEnd,
+        weight: Number(recency.toFixed(3))
+      });
+    }
+  }
+  memory.completedGames = Math.min(100, Number(memory.completedGames ?? 0) + 1);
+  memory.lastCompletedAt = Date.now();
+  const entries = Object.entries(memory.entries)
+    .sort((a, b) => (b[1].updatedAt ?? 0) - (a[1].updatedAt ?? 0))
+    .slice(0, 300);
+  memory.entries = Object.fromEntries(entries);
+  saveStrategyMemory(memory);
+  saveLearningGame({
+    playedAt: Date.now(),
+    winnerIndex,
+    botWon: winnerIndex === botIndex,
+    totalMoves,
+    decisiveMoves
+  });
+}
+
+function saveLearningGame(game) {
+  if (typeof window === "undefined") return;
+  try {
+    const storageKey = "mindbug.botLearningGames.v1";
+    const raw = window.localStorage?.getItem(storageKey);
+    const games = raw ? JSON.parse(raw) : [];
+    const next = [...(Array.isArray(games) ? games : []), game].slice(-100);
+    window.localStorage?.setItem(storageKey, JSON.stringify(next));
+  } catch {
+    // Learning history is optional when storage is unavailable.
+  }
 }

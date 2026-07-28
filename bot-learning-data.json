@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "updatedAt": null,
+  "games": [],
+  "strategyMemory": {
+    "botIndex": 1,
+    "entries": {},
+    "completedGames": 0
+  }
+}

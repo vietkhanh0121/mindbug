@@ -1,4 +1,4 @@
-import { createMindbugBot } from "./bot-player.js?v=16";
+import { createMindbugBot } from "./bot-player.js?v=18";
 import { GameAnimations } from "./game-animations.js?v=4";
 import { getSfxVolume, getSfxVolumeLevel, playSoundEffect, setSfxVolumeLevel, unlockAudio } from "./sound.js?v=13";
 import { io } from "socket.io-client";
@@ -620,6 +620,52 @@ function saveDuelRoomCode(code = "") {
     // Reconnect remains available for the lifetime of this page.
   }
 }
+
+async function hydrateBotLearningFromFile() {
+  try {
+    const fileUrl = new URL(`${import.meta.env.BASE_URL}bot-learning-data.json`, window.location.href);
+    const response = await fetch(fileUrl, { cache: "no-store" });
+    if (!response.ok) return;
+    const payload = await response.json();
+    const fileGames = Array.isArray(payload?.games) ? payload.games.slice(-100) : [];
+    const fileMemory = payload?.strategyMemory;
+    if (!fileMemory || typeof fileMemory !== "object" || typeof fileMemory.entries !== "object") return;
+    const localGamesRaw = window.localStorage?.getItem("mindbug.botLearningGames.v1");
+    const localMemoryRaw = window.localStorage?.getItem("mindbug.botStrategyMemory.1");
+    const localGames = localGamesRaw ? JSON.parse(localGamesRaw) : [];
+    const localMemory = localMemoryRaw ? JSON.parse(localMemoryRaw) : null;
+    const fileCount = Number(fileMemory.completedGames ?? fileGames.length);
+    const localCount = Number(localMemory?.completedGames ?? (Array.isArray(localGames) ? localGames.length : 0));
+    if (fileCount > localCount) {
+      window.localStorage?.setItem("mindbug.botLearningGames.v1", JSON.stringify(fileGames));
+      window.localStorage?.setItem("mindbug.botStrategyMemory.1", JSON.stringify(fileMemory));
+    } else if (localCount > fileCount) {
+      await persistBotLearningFile();
+    }
+  } catch {
+    // The bundled learning file is optional; localStorage remains the fallback.
+  }
+}
+
+async function persistBotLearningFile() {
+  try {
+    const gamesRaw = window.localStorage?.getItem("mindbug.botLearningGames.v1");
+    const memoryRaw = window.localStorage?.getItem("mindbug.botStrategyMemory.1");
+    const games = gamesRaw ? JSON.parse(gamesRaw) : [];
+    const strategyMemory = memoryRaw ? JSON.parse(memoryRaw) : null;
+    if (!strategyMemory || !Array.isArray(games)) return;
+    const socketOrigin = String(import.meta.env.VITE_SOCKET_URL || "").trim();
+    const apiUrl = new URL("/api/bot-learning", socketOrigin || window.location.origin);
+    const response = await fetch(apiUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ games: games.slice(-100), strategyMemory })
+    });
+    if (!response.ok) throw new Error(`Learning sync failed: ${response.status}`);
+  } catch {
+    // Static hosting cannot write files; the browser copy remains available.
+  }
+}
 const DEBUG_KEYWORD_CARD_NAMES = {
   FRENZY: "Luchataur",
   HUNTER: "Compost Dragon",
@@ -1152,6 +1198,7 @@ function continueDuelWithBot(payload = {}) {
   saveDuelRoomCode("");
   lobbyRoom = null;
   configureBotDifficulty();
+  bot.startLearningGame();
   state.players[BOT_INDEX].name = "Bot";
   playerAvatars[BOT_INDEX] = randomAvatarId(playerAvatars[0]);
   clearRemoteMessage();
@@ -2604,6 +2651,7 @@ function newGame({ randomizeBotAvatar = true, duel = false, opponentName = "Kiva
     extraTurnSource: "",
     frenzyOnly: null
   };
+  if (!duelModeActive) bot.startLearningGame();
   state.players.forEach((player, index) => markOriginalOwner(player.deck, index));
   state.players.forEach((player, index) => markOriginalOwner(player.extraDeck, index));
   for (const player of state.players) {
@@ -2975,6 +3023,9 @@ async function playCard(cardId) {
   const opponent = opponentPlayer();
   const cardIndex = player.hand.findIndex(card => card.id === cardId);
   if (cardIndex < 0) return;
+  if (!duelModeActive && !animationTestMode) {
+    bot.recordGameAction(state, { type: "play", cardId }, playedByIndex);
+  }
   clearRemoteMessageForAction();
   const botPlaySourceRect = playedByIndex === BOT_INDEX ? measureOpponentLeftmostHandCardRect() : null;
   const [card] = player.hand.splice(cardIndex, 1);
@@ -3645,6 +3696,9 @@ async function useEvolutionAction(cardId, ownerIndex) {
   const player = state.players[ownerIndex];
   const card = player.board.find(item => item.id === cardId);
   if (!card || !canUseEvolutionAction(card, ownerIndex)) return;
+  if (!duelModeActive && !animationTestMode) {
+    bot.recordGameAction(state, { type: "action", cardId }, ownerIndex);
+  }
   clearRemoteMessageForAction();
   announceAbilityActivation(card, ownerIndex, "Khi Được tưới");
   setOpponentAbilityMessage(card, displayAbility(card));
@@ -4053,6 +4107,9 @@ async function attack(cardId) {
   const defenderIndex = 1 - state.active;
   const attacker = currentPlayer().board.find(card => card.id === cardId);
   if (!attacker || !canAttack(attacker, attackerIndex)) return;
+  if (!duelModeActive && !animationTestMode) {
+    bot.recordGameAction(state, { type: "attack", cardId }, attackerIndex);
+  }
   clearRemoteMessageForAction();
   const isFrenzySecondAttack = canAttackAgain(attacker, attackerIndex);
   state.frenzyOnly = null;
@@ -5179,6 +5236,9 @@ function checkGameOver() {
 
 function finishGame(winnerIndex, reason) {
   endHandScrubGesture();
+  const learnedGameCount = !duelModeActive && !animationTestMode
+    ? bot.completeLearningGame(winnerIndex)
+    : 0;
   state.winner = winnerIndex;
   state.phase = "gameover";
   state.frenzyOnly = null;
@@ -5201,6 +5261,10 @@ function finishGame(winnerIndex, reason) {
   choiceDepth = 0;
   if (els.choiceDialog.open) els.choiceDialog.close();
   log(`${state.players[winnerIndex].name} thắng! ${reason}`);
+  if (learnedGameCount) {
+    log(`Đã lưu dữ liệu học của ván ${learnedGameCount}/100.`);
+    persistBotLearningFile();
+  }
   showRemoteMessage(winnerIndex === 0 ? "Thắng" : "Thua", "", { sticky: true });
   showGameOverDialog(winnerIndex, reason);
 }
@@ -8197,6 +8261,7 @@ if ("serviceWorker" in navigator && (location.protocol === "https:" || location.
 }
 loadVietnameseCardText().finally(async () => {
   await calibrateMotionDelta();
+  await hydrateBotLearningFromFile();
   renderLobby();
   if (savedDuelRoomCode()) {
     connectDuelSocket().catch(() => {
