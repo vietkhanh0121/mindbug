@@ -8,6 +8,8 @@ const CLIENT_ORIGINS = String(process.env.CLIENT_ORIGIN || "")
   .map(origin => origin.trim().replace(/\/+$/, ""))
   .filter(Boolean);
 const rooms = new Map();
+const abandonedSessions = new Map();
+const DISCONNECT_GRACE_MS = 60_000;
 const STARTING_LIFE = 3;
 const STARTING_MINDBUGS = 2;
 const HAND_SIZE = 5;
@@ -1513,8 +1515,8 @@ function checkServerGameOver(state) {
   }
 }
 
-function playerIndexForSocket(room, socketId) {
-  return room.players.findIndex(player => player.id === socketId);
+function playerIndexForSocket(room, socket) {
+  return room.players.findIndex(player => player.id === socket.data.playerSessionId);
 }
 
 function emitGame(room, event = null) {
@@ -1526,7 +1528,7 @@ function emitGame(room, event = null) {
 }
 
 function applyGameAction(room, socket, action = {}) {
-  const actorIndex = playerIndexForSocket(room, socket.id);
+  const actorIndex = playerIndexForSocket(room, socket);
   if (actorIndex < 0) return { ok: false, message: "Ván không hợp lệ." };
   const type = action.type;
   if (type === "new-game") {
@@ -2235,7 +2237,8 @@ function publicRoom(room) {
       id: player.id,
       name: player.name,
       avatar: player.avatar,
-      ready: player.ready
+      ready: player.ready,
+      connected: player.connected !== false
     }))
   };
 }
@@ -2251,13 +2254,76 @@ function removeSocketFromRoom(socket) {
   socket.leave(code);
   socket.data.roomCode = "";
   if (!room) return;
-  room.players = room.players.filter(player => player.id !== socket.id);
+  room.players = room.players.filter(player => player.id !== socket.data.playerSessionId);
   if (!room.players.length) {
     rooms.delete(code);
     return;
   }
-  if (room.hostId === socket.id) room.hostId = room.players[0].id;
+  if (room.hostId === socket.data.playerSessionId) room.hostId = room.players[0].id;
   emitRoom(room);
+}
+
+function clearDisconnectTimer(player) {
+  if (player?.disconnectTimer) clearTimeout(player.disconnectTimer);
+  if (player) player.disconnectTimer = null;
+}
+
+function markPlayerDisconnected(socket) {
+  const room = rooms.get(socket.data.roomCode);
+  if (!room) return;
+  const player = room.players.find(item => item.id === socket.data.playerSessionId);
+  if (!player) return;
+  player.connected = false;
+  player.socketId = "";
+  player.disconnectedAt = Date.now();
+  clearDisconnectTimer(player);
+  player.disconnectTimer = setTimeout(() => {
+    if (player.connected || !rooms.has(room.code)) return;
+    const opponent = room.players.find(item => item.id !== player.id && item.connected && item.socketId);
+    if (opponent) {
+      io.to(opponent.socketId).emit("opponent-away-timeout", {
+        playerName: player.name,
+        playerSessionId: player.id
+      });
+    }
+  }, DISCONNECT_GRACE_MS);
+  emitRoom(room);
+}
+
+function resumePlayerSession(socket, { sessionId, roomCode } = {}, reply) {
+  const stableId = String(sessionId || "").trim();
+  socket.data.playerSessionId = stableId || socket.id;
+  const abandoned = abandonedSessions.get(socket.data.playerSessionId);
+  if (abandoned && abandoned.expiresAt > Date.now()) {
+    reply?.({ ok: false, reason: abandoned.reason, message: "Bạn đã thoát game" });
+    return;
+  }
+  const requestedCode = String(roomCode || "").replace(/\D/g, "").slice(0, 4);
+  const room = rooms.get(requestedCode);
+  const player = room?.players.find(item => item.id === socket.data.playerSessionId);
+  if (!room || !player) {
+    reply?.({ ok: false, reason: "not-found" });
+    return;
+  }
+  clearDisconnectTimer(player);
+  player.connected = true;
+  player.socketId = socket.id;
+  player.disconnectedAt = 0;
+  socket.join(room.code);
+  socket.data.roomCode = room.code;
+  emitRoom(room);
+  reply?.({ ok: true, room: publicRoom(room), state: room.game ?? null });
+  if (room.started && room.game) {
+    const opponent = room.players.find(item => item.id !== player.id);
+    if (opponent?.connected && opponent.socketId) {
+      io.to(opponent.socketId).emit("opponent-returned", { playerName: player.name });
+    } else if (opponent?.disconnectedAt && Date.now() - opponent.disconnectedAt >= DISCONNECT_GRACE_MS) {
+      socket.emit("opponent-away-timeout", {
+        playerName: opponent.name,
+        playerSessionId: opponent.id
+      });
+    }
+  }
 }
 
 const httpServer = createServer();
@@ -2297,15 +2363,20 @@ const io = new Server(httpServer, {
 });
 
 io.on("connection", socket => {
+  socket.on("resume-session", (payload = {}, reply) => {
+    resumePlayerSession(socket, payload, reply);
+  });
+
   socket.on("create-room", (payload = {}, reply) => {
     const profile = payload?.profile ?? payload;
+    socket.data.playerSessionId = String(payload.sessionId || socket.id);
     removeSocketFromRoom(socket);
     const code = createRoomCode();
     const room = {
       code,
-      hostId: socket.id,
+      hostId: socket.data.playerSessionId,
       started: false,
-      players: [{ id: socket.id, ...sanitizeProfile(profile), ready: true }]
+      players: [{ id: socket.data.playerSessionId, socketId: socket.id, connected: true, ...sanitizeProfile(profile), ready: true }]
     };
     rooms.set(code, room);
     socket.join(code);
@@ -2314,7 +2385,7 @@ io.on("connection", socket => {
     reply?.({ ok: true, room: publicRoom(room) });
   });
 
-  socket.on("join-room", ({ code, profile } = {}, reply) => {
+  socket.on("join-room", ({ code, profile, sessionId: requestedSessionId } = {}, reply) => {
     const roomCode = String(code || "").replace(/\D/g, "").slice(0, 4);
     const room = rooms.get(roomCode);
     if (!room) {
@@ -2325,14 +2396,16 @@ io.on("connection", socket => {
       reply?.({ ok: false, message: "Phòng đã bắt đầu." });
       return;
     }
-    if (room.players.length >= 2 && !room.players.some(player => player.id === socket.id)) {
+    const sessionId = String(requestedSessionId || socket.id);
+    socket.data.playerSessionId = sessionId;
+    if (room.players.length >= 2 && !room.players.some(player => player.id === sessionId)) {
       reply?.({ ok: false, message: "Phòng đã đủ người." });
       return;
     }
     removeSocketFromRoom(socket);
-    const existing = room.players.find(player => player.id === socket.id);
-    if (existing) Object.assign(existing, sanitizeProfile(profile), { ready: true });
-    else room.players.push({ id: socket.id, ...sanitizeProfile(profile), ready: true });
+    const existing = room.players.find(player => player.id === sessionId);
+    if (existing) Object.assign(existing, sanitizeProfile(profile), { socketId: socket.id, connected: true, ready: true });
+    else room.players.push({ id: sessionId, socketId: socket.id, connected: true, ...sanitizeProfile(profile), ready: true });
     socket.join(room.code);
     socket.data.roomCode = room.code;
     emitRoom(room);
@@ -2342,7 +2415,7 @@ io.on("connection", socket => {
   socket.on("profile-update", profile => {
     const room = rooms.get(socket.data.roomCode);
     if (!room) return;
-    const player = room.players.find(item => item.id === socket.id);
+    const player = room.players.find(item => item.id === socket.data.playerSessionId);
     if (!player) return;
     Object.assign(player, sanitizeProfile(profile));
     emitRoom(room);
@@ -2350,7 +2423,7 @@ io.on("connection", socket => {
 
   socket.on("start-room", reply => {
     const room = rooms.get(socket.data.roomCode);
-    if (!room || room.hostId !== socket.id) {
+    if (!room || room.hostId !== socket.data.playerSessionId) {
       reply?.({ ok: false, message: "Chỉ chủ phòng mới bắt đầu được." });
       return;
     }
@@ -2380,8 +2453,60 @@ io.on("connection", socket => {
     removeSocketFromRoom(socket);
   });
 
+  socket.on("player-away", () => {
+    markPlayerDisconnected(socket);
+  });
+
+  socket.on("player-active", () => {
+    resumePlayerSession(socket, {
+      sessionId: socket.data.playerSessionId,
+      roomCode: socket.data.roomCode
+    });
+  });
+
+  socket.on("disconnect-choice", ({ choice, playerSessionId } = {}, reply) => {
+    const room = rooms.get(socket.data.roomCode);
+    const actor = room?.players.find(player => player.id === socket.data.playerSessionId);
+    const awayPlayer = room?.players.find(player => player.id === playerSessionId && player.connected === false);
+    if (!room || !actor || !awayPlayer) {
+      reply?.({ ok: false, message: "Người chơi đã quay lại hoặc phòng không còn tồn tại." });
+      return;
+    }
+    if (choice === "wait") {
+      reply?.({ ok: true });
+      return;
+    }
+    if (choice === "bot") {
+      const expiresAt = Date.now() + 6 * 60 * 60 * 1000;
+      abandonedSessions.set(awayPlayer.id, { reason: "taken-over", expiresAt });
+      setTimeout(() => {
+        const abandoned = abandonedSessions.get(awayPlayer.id);
+        if (abandoned?.expiresAt === expiresAt) abandonedSessions.delete(awayPlayer.id);
+      }, expiresAt - Date.now());
+      clearDisconnectTimer(awayPlayer);
+      io.to(socket.id).emit("bot-takeover", {
+        room: publicRoom(room),
+        state: room.game,
+        botPlayerIndex: room.players.indexOf(awayPlayer)
+      });
+      rooms.delete(room.code);
+      socket.leave(room.code);
+      socket.data.roomCode = "";
+      reply?.({ ok: true });
+      return;
+    }
+    if (choice === "lobby") {
+      removeSocketFromRoom(socket);
+      reply?.({ ok: true });
+      return;
+    }
+    reply?.({ ok: false, message: "Lựa chọn không hợp lệ." });
+  });
+
   socket.on("disconnect", () => {
-    removeSocketFromRoom(socket);
+    const room = rooms.get(socket.data.roomCode);
+    if (room?.started) markPlayerDisconnected(socket);
+    else removeSocketFromRoom(socket);
   });
 });
 

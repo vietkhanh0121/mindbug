@@ -536,6 +536,9 @@ let earwigChoicePrompt = null;
 let utilityKeywordSelection = null;
 let pendingMindbug = null;
 let choicePromptActorIndex = null;
+let activeChoicePromptContext = null;
+let activeChoicePromptResolve = null;
+let activeChoicePreviousPhase = null;
 let inspectAnimation = null;
 let suppressNextInspectClick = false;
 let handScrubGesture = null;
@@ -562,7 +565,7 @@ let botDifficulty = "normal";
 let lobbyRoom = null;
 let lobbyDuelStatus = "";
 let duelSocket = null;
-let duelClientId = "";
+let duelClientId = loadOrCreateDuelSessionId();
 let duelModeActive = false;
 let applyingRemoteDuelState = false;
 let duelBlockSelectionMode = false;
@@ -588,6 +591,35 @@ const PLAYER_COLOR_CONFIG = {
     border: "#cfe6ff"
   }
 };
+
+function loadOrCreateDuelSessionId() {
+  try {
+    const saved = window.localStorage?.getItem("mindbug.duelSessionId");
+    if (saved) return saved;
+    const created = window.crypto?.randomUUID?.() ?? `p-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    window.localStorage?.setItem("mindbug.duelSessionId", created);
+    return created;
+  } catch {
+    return `p-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  }
+}
+
+function savedDuelRoomCode() {
+  try {
+    return window.localStorage?.getItem("mindbug.activeDuelRoom") ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function saveDuelRoomCode(code = "") {
+  try {
+    if (code) window.localStorage?.setItem("mindbug.activeDuelRoom", code);
+    else window.localStorage?.removeItem("mindbug.activeDuelRoom");
+  } catch {
+    // Reconnect remains available for the lifetime of this page.
+  }
+}
 const DEBUG_KEYWORD_CARD_NAMES = {
   FRENZY: "Luchataur",
   HUNTER: "Compost Dragon",
@@ -981,7 +1013,8 @@ function setBotDifficulty(difficulty) {
 function duelProfilePayload() {
   return {
     name: sanitizePlayerName(localPlayerName),
-    avatar: playerAvatars[0]
+    avatar: playerAvatars[0],
+    sessionId: duelClientId
   };
 }
 
@@ -1026,8 +1059,38 @@ function ensureDuelSocket() {
     transports: ["websocket", "polling"]
   });
   duelSocket.on("connect", () => {
-    duelClientId = duelSocket.id;
     setLobbyDuelStatus("");
+    const roomCode = lobbyRoom?.code || savedDuelRoomCode();
+    if (roomCode) {
+      duelSocket.emit("resume-session", { sessionId: duelClientId, roomCode }, response => {
+        if (response?.ok) {
+          applyDuelRoom(response.room);
+          saveDuelRoomCode(response.room.code);
+          if (response.state) {
+            if (duelModeActive) {
+              queueAuthoritativeDuelUpdate({
+                room: response.room,
+                state: response.state,
+                event: { type: "resume" }
+              });
+            } else {
+              startDuelMatch(response.room, 0, response.state);
+            }
+          }
+          return;
+        }
+        if (response?.reason === "taken-over") {
+          saveDuelRoomCode("");
+          showRemoteMessage("Bạn đã thoát game", "");
+          returnToLobby();
+          return;
+        }
+        if (response?.reason === "not-found") {
+          saveDuelRoomCode("");
+          setLobbyDuelStatus("Phòng trước đó không còn tồn tại.");
+        }
+      });
+    }
   });
   duelSocket.on("connect_error", () => {
     setLobbyDuelStatus("Không kết nối được phòng online.");
@@ -1042,7 +1105,62 @@ function ensureDuelSocket() {
   duelSocket.on("game-update", payload => {
     queueAuthoritativeDuelUpdate(payload);
   });
+  duelSocket.on("opponent-returned", payload => {
+    if (els.choiceDialog?.open && activeChoicePromptContext?.type === "opponent-away") {
+      finishActiveChoicePrompt("returned");
+    }
+    showRemoteMessage(`${payload?.playerName || "Đối thủ"} đã quay lại`, "");
+  });
+  duelSocket.on("opponent-away-timeout", payload => {
+    if (duelModeActive) showOpponentAwayPrompt(payload);
+    else window.setTimeout(() => showOpponentAwayPrompt(payload), 800);
+  });
+  duelSocket.on("bot-takeover", payload => {
+    continueDuelWithBot(payload);
+  });
   return duelSocket;
+}
+
+async function showOpponentAwayPrompt(payload = {}) {
+  if (!duelModeActive || els.choiceDialog?.open) return;
+  const choice = await askChoice({
+    title: `${payload.playerName || "Đối thủ"} đã thoát game`,
+    text: "Có muốn chờ tiếp không?",
+    options: [
+      { label: "Chờ", value: "wait" },
+      { label: "Chơi tiếp với Bot", value: "bot" },
+      { label: "Về sảnh", value: "lobby" }
+    ],
+    context: { type: "opponent-away", preservePhase: true }
+  });
+  if (choice === "returned") return;
+  duelSocket?.emit("disconnect-choice", {
+    choice,
+    playerSessionId: payload.playerSessionId
+  }, response => {
+    if (!response?.ok) showRemoteMessage("Không thể thực hiện", response?.message || "");
+    if (choice === "lobby" && response?.ok) returnToLobby();
+  });
+}
+
+function continueDuelWithBot(payload = {}) {
+  const room = payload.room;
+  const localizedState = localizeServerState(payload.state, room);
+  if (!localizedState) return;
+  state = localizedState;
+  duelModeActive = false;
+  saveDuelRoomCode("");
+  lobbyRoom = null;
+  configureBotDifficulty();
+  state.players[BOT_INDEX].name = "Bot";
+  playerAvatars[BOT_INDEX] = randomAvatarId(playerAvatars[0]);
+  clearRemoteMessage();
+  if (state.phase === "pending") {
+    state.phase = "action";
+    state.pending = null;
+  }
+  render();
+  scheduleBotTurn();
 }
 
 function connectDuelSocket() {
@@ -2112,6 +2230,7 @@ function applyDuelRoom(room) {
     localIndex,
     started: Boolean(room.started)
   };
+  saveDuelRoomCode(room.code);
   lobbyProfileReturnScreen = "waiting";
   lobbyScreen = keepProfileOverlay ? "profile" : "waiting";
   updateLobbyScreen();
@@ -2225,7 +2344,8 @@ async function createDuelRoom() {
   try {
     const socket = await connectDuelSocket();
     socket.emit("create-room", {
-      profile: duelProfilePayload()
+      profile: duelProfilePayload(),
+      sessionId: duelClientId
     }, response => {
       if (!response?.ok) {
         setLobbyDuelStatus(response?.message || "Không tạo được phòng.");
@@ -2247,7 +2367,7 @@ async function joinDuelRoom() {
   setLobbyDuelStatus("Đang vào phòng...");
   try {
     const socket = await connectDuelSocket();
-    socket.emit("join-room", { code, profile: duelProfilePayload() }, response => {
+    socket.emit("join-room", { code, profile: duelProfilePayload(), sessionId: duelClientId }, response => {
       if (!response?.ok) {
         setLobbyDuelStatus(response?.message || "Không vào được phòng.");
         return;
@@ -2389,6 +2509,7 @@ function returnToLobby() {
   state.phase = "lobby";
   lobbyStarted = false;
   lobbyRoom = null;
+  saveDuelRoomCode("");
   lobbyScreen = lobbyProfileReady ? "mode" : "profile";
   els.lobbyView?.classList.remove("hidden");
   renderLobby();
@@ -7441,14 +7562,20 @@ async function closeInspectDialogWithAnimation() {
 function askChoice({ title, text, options, context = null }) {
   return new Promise(resolve => {
     choiceDepth += 1;
+    activeChoicePreviousPhase = state.phase;
     state.phase = "choice";
     choicePromptActorIndex = Number.isInteger(context?.actorIndex) ? context.actorIndex : null;
+    activeChoicePromptContext = context;
+    activeChoicePromptResolve = resolve;
     render();
     const botContext = { ...context, options };
     if (!duelModeActive && botContext.actorIndex === BOT_INDEX) {
       window.setTimeout(() => {
         choiceDepth -= 1;
         choicePromptActorIndex = null;
+        activeChoicePromptContext = null;
+        activeChoicePromptResolve = null;
+        activeChoicePreviousPhase = null;
         if (!choiceDepth && !hasWinner()) state.phase = "action";
         clearRemoteMessageForAction();
         resolve(bot.chooseOption(botContext, state, botHelpers()) ?? options[0]?.value ?? "");
@@ -7465,18 +7592,31 @@ function askChoice({ title, text, options, context = null }) {
       button.type = "button";
       button.textContent = option.label;
       button.addEventListener("click", () => {
-        els.choiceDialog.close();
-        els.choiceDialog.classList.remove("surrenderChoiceDialog");
-        choiceDepth -= 1;
-        choicePromptActorIndex = null;
-        if (!choiceDepth && !hasWinner()) state.phase = "action";
-        clearRemoteMessageForAction();
-        resolve(option.value);
+        finishActiveChoicePrompt(option.value);
       });
       els.choiceOptions.append(button);
     }
     els.choiceDialog.showModal();
   });
+}
+
+function finishActiveChoicePrompt(value) {
+  const resolve = activeChoicePromptResolve;
+  const context = activeChoicePromptContext;
+  const previousPhase = activeChoicePreviousPhase;
+  if (!resolve) return;
+  activeChoicePromptResolve = null;
+  activeChoicePromptContext = null;
+  activeChoicePreviousPhase = null;
+  if (els.choiceDialog?.open) els.choiceDialog.close();
+  els.choiceDialog?.classList.remove("surrenderChoiceDialog");
+  choiceDepth -= 1;
+  choicePromptActorIndex = null;
+  if (!choiceDepth && !hasWinner()) {
+    state.phase = context?.preservePhase ? previousPhase : "action";
+  }
+  clearRemoteMessageForAction();
+  resolve(value);
 }
 
 function pickCard(cards, title, allowSkip = false, context = {}) {
@@ -7901,6 +8041,17 @@ els.lobbyRoomCodeInput?.addEventListener("input", () => {
   if (els.lobbyRoomCodeInput.value !== code) els.lobbyRoomCodeInput.value = code;
   updateJoinRoomButtonState();
 });
+
+document.addEventListener("visibilitychange", () => {
+  if (!duelModeActive || !lobbyRoom?.online || !duelSocket?.connected) return;
+  duelSocket.emit(document.hidden ? "player-away" : "player-active");
+});
+
+window.addEventListener("pagehide", () => {
+  if (duelModeActive && lobbyRoom?.online && duelSocket?.connected) {
+    duelSocket.emit("player-away");
+  }
+});
 document.querySelectorAll("[data-bot-difficulty]").forEach(button => {
   button.addEventListener("click", () => setBotDifficulty(button.dataset.botDifficulty));
 });
@@ -8047,6 +8198,11 @@ if ("serviceWorker" in navigator && (location.protocol === "https:" || location.
 loadVietnameseCardText().finally(async () => {
   await calibrateMotionDelta();
   renderLobby();
+  if (savedDuelRoomCode()) {
+    connectDuelSocket().catch(() => {
+      setLobbyDuelStatus("Không thể khôi phục phòng online.");
+    });
+  }
   window.setTimeout(() => {
     ensureGameAssetsPreloaded({ showLobbyStatus: true }).catch(() => {});
   }, 60);
