@@ -57,7 +57,7 @@ File này chỉ dùng cho lớp hiển thị tiếng Việt của game. Tên g�
 - Hiệu ứng: Khi ở dưới Mộ bài: có thể triệu hồi Lá bài này lên sân nếu bị mất LP
 
 ## Majestic Manticore
-- Tên: Củ Cải Tím Tái
+- Tên: Su Hào Xui Xẻo
 - Tấn công: 6
 - Từ khóa: ĐỘC
 - Hiệu ứng: Khi Tấn công: Giết những Quái vật với Tấn công thấp nhất
