@@ -56,7 +56,7 @@ const RAW_CARDS = [
   ["Hamster Lion", 2, 8, ["FRENZY"], "Constant: The enemy creature(s) with the lowest power can't attack"],
   ["Hungry Hungry Hamster", 2, 2, ["SNEAKY"], "Play: The opponent gives you a card from their hand"],
   ["Hyenix", 2, 7, ["FRENZY"], "Constant: When you lose life while this is in your discard pile, play it"],
-  ["Majestic Manticore", 2, 6, ["POISONOUS"], "Attack: Defeat the creature(s) with the lowest power"],
+  ["Majestic Manticore", 2, 6, ["POISONOUS"], "Attack: Defeat the creature(s) with the lowest power among all creatures in play"],
   ["The Lurker", 2, 4, ["TOUGH"], "Attack: If you control more creatures than the opponent, this has SNEAKY this turn"],
   ["Turf The Surfer", 2, 8, [], "Attack: Choose a creature. It cannot block this turn"],
   ["Cloud Lady", 1, 4, [], "Action: Defeat an enemy creature with power 4 or less. Evolve into Typhoon Princess."],
@@ -316,7 +316,7 @@ const CARD_NAME_LABELS = {
   "Hamster Lion": "Sư Tử Hạt Dẻ",
   "Hungry Hungry Hamster": "Chuột Hamster Háu Ăn",
   "Hyenix": "Linh Cẩu Hồi Sinh",
-  "Majestic Manticore": "Mãng Cầu Chúa",
+  "Majestic Manticore": "Su Hào Xui Xẻo",
   "The Lurker": "Kẻ Rình Rập",
   "Turf The Surfer": "Cỏ Lướt Sóng",
   "Cloud Lady": "Cô Mây",
@@ -372,7 +372,7 @@ const ABILITY_LABELS = {
   "Hamster Lion": "Quái vật địch có tấn công thấp nhất không thể tấn công.",
   "Hungry Hungry Hamster": "Khi vào sân: Đối thủ đưa bạn 1 lá từ tay.",
   "Hyenix": "Khi ở dưới Mộ bài: Nếu bạn mất LP, lá này tự vào sân.",
-  "Majestic Manticore": "Khi tấn công: Hạ các Quái vật có tấn công thấp nhất.",
+  "Majestic Manticore": "Khi tấn công: So sánh toàn bộ Quái vật trên sân và hạ các Quái vật có tấn công thấp nhất.",
   "The Lurker": "Khi tấn công: Nếu bạn có nhiều Quái vật hơn đối thủ, lá này có TÀNG HÌNH lượt này.",
   "Turf The Surfer": "Khi tấn công: Chọn 1 Quái vật. Nó không thể chặn trong lượt này.",
   "Cloud Lady": "Khi Được tưới: Hạ 1 Quái vật địch có Tấn công từ 4 trở xuống. Tiến hóa thành Công Chúa Bão.",
@@ -4078,10 +4078,20 @@ async function resolveAttackAbility(card, ownerIndex) {
       await defeatOne(ownerIndex, enemy.board, "Chọn Quái vật để hạ", false, card);
       break;
     case "Majestic Manticore": {
-      if (!enemy.board.length) break;
-      const lowestPower = Math.min(...enemy.board.map(c => cardPower(c, 1 - ownerIndex)));
-      await defeatMatching(enemy.board.filter(c => cardPower(c, 1 - ownerIndex) === lowestPower), 1 - ownerIndex);
-      log(`${card.name} hạ các Quái vật có tấn công thấp nhất.`);
+      const creaturesInPlay = state.players.flatMap((player, targetOwnerIndex) => (
+        player.board.map(target => ({
+          id: target.id,
+          ownerIndex: targetOwnerIndex,
+          power: cardPower(target, targetOwnerIndex)
+        }))
+      ));
+      const lowestPower = Math.min(...creaturesInPlay.map(target => target.power));
+      const lowestCreatures = creaturesInPlay.filter(target => target.power === lowestPower);
+      for (const target of lowestCreatures) {
+        const currentOwnerIndex = state.players.findIndex(player => player.board.some(boardCard => boardCard.id === target.id));
+        if (currentOwnerIndex >= 0) await defeatCreature(target.id, currentOwnerIndex);
+      }
+      log(`${card.name} hạ các Quái vật có tấn công thấp nhất trên toàn bộ sân.`);
       break;
     }
     case "The Lurker":

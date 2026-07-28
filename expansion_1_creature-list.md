@@ -56,7 +56,7 @@
 - Số lượng: 2
 - Power: 6
 - Keyword: POISONOUS
-- Ability: Attack: Defeat the creature(s) with the lowest power.
+- Ability: Attack: Compare all creatures in play and defeat the creature(s) with the lowest power.
 
 ## The Lurker
 - Số lượng: 2

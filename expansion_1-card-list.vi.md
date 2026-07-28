@@ -60,7 +60,7 @@ File này chỉ dùng cho lớp hiển thị tiếng Việt của game. Tên g�
 - Tên: Su Hào Xui Xẻo
 - Tấn công: 6
 - Từ khóa: ĐỘC
-- Hiệu ứng: Khi Tấn công: Giết những Quái vật với Tấn công thấp nhất
+- Hiệu ứng: Khi Tấn công: So sánh toàn bộ Quái vật trên sân của cả hai người chơi và hạ những Quái vật có Tấn công thấp nhất
 
 ## The Lurker
 - Tên: Mướp Tàng Hình

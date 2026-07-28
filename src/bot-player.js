@@ -934,10 +934,19 @@ function applySimAttackAbility(sim, attacker, attackerIndex, defenderIndex, help
     sim.players[attackerIndex].life -= 1;
     defeatBestSimTarget(sim, defenderIndex, helpers, () => true);
   }
-  if (attacker.name === "Majestic Manticore" && defender.board.length) {
-    const lowestPower = Math.min(...defender.board.map(card => simPower(card, sim, defenderIndex, helpers)));
-    for (const target of [...defender.board]) {
-      if (simPower(target, sim, defenderIndex, helpers) === lowestPower) simDamageOrDefeat(sim, target.id, defenderIndex, helpers);
+  if (attacker.name === "Majestic Manticore") {
+    const creaturesInPlay = sim.players.flatMap((player, ownerIndex) => (
+      player.board.map(card => ({
+        card,
+        ownerIndex,
+        power: simPower(card, sim, ownerIndex, helpers)
+      }))
+    ));
+    const lowestPower = Math.min(...creaturesInPlay.map(target => target.power));
+    for (const target of creaturesInPlay) {
+      if (target.power !== lowestPower) continue;
+      const currentOwnerIndex = sim.players.findIndex(player => player.board.some(card => card.id === target.card.id));
+      if (currentOwnerIndex >= 0) simDefeatCreature(sim, target.card.id, currentOwnerIndex, helpers);
     }
   }
   if (attacker.name === "Turf The Surfer") {
@@ -1101,6 +1110,18 @@ function simDamageOrDefeat(sim, cardId, ownerIndex, helpers) {
     card.damage += 1;
     return;
   }
+  const [defeated] = board.splice(index, 1);
+  defeated.damage = 0;
+  defeated.exhausted = false;
+  defeated.attacksThisTurn = 0;
+  sim.players[ownerIndex].discard.push(defeated);
+  applySimDefeatedAbility(sim, defeated, ownerIndex, helpers);
+}
+
+function simDefeatCreature(sim, cardId, ownerIndex, helpers) {
+  const board = sim.players[ownerIndex].board;
+  const index = board.findIndex(card => card.id === cardId);
+  if (index < 0) return;
   const [defeated] = board.splice(index, 1);
   defeated.damage = 0;
   defeated.exhausted = false;

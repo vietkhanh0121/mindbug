@@ -55,7 +55,7 @@ const RAW_CARDS = [
   ["Hamster Lion", 2, 8, ["FRENZY"], "Constant: The enemy creature(s) with the lowest power can't attack"],
   ["Hungry Hungry Hamster", 2, 2, ["SNEAKY"], "Play: The opponent gives you a card from their hand"],
   ["Hyenix", 2, 7, ["FRENZY"], "Constant: When you lose life while this is in your discard pile, play it"],
-  ["Majestic Manticore", 2, 6, ["POISONOUS"], "Attack: Defeat the creature(s) with the lowest power"],
+  ["Majestic Manticore", 2, 6, ["POISONOUS"], "Attack: Defeat the creature(s) with the lowest power among all creatures in play"],
   ["The Lurker", 2, 4, ["TOUGH"], "Attack: If you control more creatures than the opponent, this has SNEAKY this turn"],
   ["Turf The Surfer", 2, 8, [], "Attack: Choose a creature. It cannot block this turn"],
   ["Cloud Lady", 1, 4, [], "Action: Defeat an enemy creature with power 4 or less. Evolve into Typhoon Princess."],
@@ -942,16 +942,22 @@ function resolveServerAttackAbility(state, ownerIndex, card) {
     });
   }
   if (card.name === "Majestic Manticore") {
-    if (!enemy.board.length) return { ability: null };
-    const lowestPower = Math.min(...enemy.board.map(target => cardPower(target, state, enemyIndex)));
+    const creaturesInPlay = state.players.flatMap((player, targetOwnerIndex) => (
+      player.board.map(target => ({
+        card: target,
+        ownerIndex: targetOwnerIndex,
+        power: cardPower(target, state, targetOwnerIndex)
+      }))
+    ));
+    const lowestPower = Math.min(...creaturesInPlay.map(target => target.power));
     const defeatedIds = [];
     const defeatedCards = [];
-    for (const target of [...enemy.board]) {
-      if (cardPower(target, state, enemyIndex) !== lowestPower) continue;
-      const removed = removeServerCreature(state, target.id, enemyIndex);
+    for (const target of creaturesInPlay) {
+      if (target.power !== lowestPower) continue;
+      const removed = removeServerCreature(state, target.card.id, target.ownerIndex);
       if (!removed) continue;
       defeatedIds.push(removed.id);
-      defeatedCards.push({ card: removed, ownerIndex: enemyIndex });
+      defeatedCards.push({ card: removed, ownerIndex: target.ownerIndex });
     }
     const defeatedAbility = resolveServerDefeatedAbilities(state, defeatedCards, continueAfter);
     defeatedIds.push(...(defeatedAbility.defeatedIds ?? []));
