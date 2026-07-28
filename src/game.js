@@ -7072,18 +7072,17 @@ function startInspectOpenAnimation(cardId, originEl, targetEl, zone, ownerIndex 
         clone.remove();
         return;
       }
-      clone.remove();
+      targetEl.classList.remove("inspectCardPending");
+      if (ownerIndex !== null && ownerIndex !== undefined) {
+        const ownerCard = state.players[ownerIndex]?.[zone === "hand" ? "hand" : zone === "board" ? "board" : "discard"]?.find(card => card.id === cardId);
+        if (ownerCard) targetEl.classList.toggle("canAct", inspectCardCanAct(ownerCard, ownerIndex, zone));
+      } else if (targetEl.dataset.canActWhenSettled === "true") {
+        targetEl.classList.add("canAct");
+      }
+      queueInspectHighlight(targetEl);
+      setCardAnimationState(CARD_ANIMATION_STATE.INSPECT_OPEN, cardId, { zone });
       window.requestAnimationFrame(() => {
-        if (inspectAnimation !== animationRef || animationRef.closing) return;
-        targetEl.classList.remove("inspectCardPending");
-        if (ownerIndex !== null && ownerIndex !== undefined) {
-          const ownerCard = state.players[ownerIndex]?.[zone === "hand" ? "hand" : zone === "board" ? "board" : "discard"]?.find(card => card.id === cardId);
-          if (ownerCard) targetEl.classList.toggle("canAct", inspectCardCanAct(ownerCard, ownerIndex, zone));
-        } else if (targetEl.dataset.canActWhenSettled === "true") {
-          targetEl.classList.add("canAct");
-        }
-        queueInspectHighlight(targetEl);
-        setCardAnimationState(CARD_ANIMATION_STATE.INSPECT_OPEN, cardId, { zone });
+        clone.remove();
       });
     });
   });
