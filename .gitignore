@@ -1,0 +1,10 @@
+node_modules/
+dist/
+graphics/
+*.tar.gz
+assets/cards/* copy.png
+.DS_Store
+.env
+.env.*
+!.env.example
+npm-debug.log*

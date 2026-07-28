@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#102417">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Cướp Rau Quả">
+    <meta name="format-detection" content="telephone=no">
+    <link rel="manifest" href="./manifest.webmanifest">
+    <link rel="apple-touch-icon" sizes="180x180" href="./assets/icons/apple-touch-icon.png">
+    <link rel="icon" type="image/png" sizes="192x192" href="./assets/icons/icon-192.png">
+    <title>Cướp Rau Quả</title>
+    <link rel="stylesheet" href="styles.css?v=141">
+  </head>
+  <body>
+    <main class="app">
+      <p id="statusText" class="srStatus">Đang khởi tạo...</p>
+
+      <section class="opponentHandPanel" aria-label="Tay bài úp của Người chơi 2">
+        <div class="opponentHandRows" id="opponentHand"></div>
+        <div id="opponentPendingAbilityOverlay" class="opponentPendingAbilityOverlay" hidden>
+          <div class="opponentPendingAbilityBox">
+            <strong id="opponentPendingAbilityTitle"></strong>
+            <span id="opponentPendingAbilityText"></span>
+          </div>
+        </div>
+      </section>
+
+      <section class="playerStrip opponentStrip" id="opponentInfo"></section>
+
+      <section class="arena" id="arena"></section>
+
+      <section class="playerStrip playerOneStrip" id="playerOneInfo"></section>
+
+      <section class="handPanel">
+        <div class="hand" id="hand"></div>
+      </section>
+
+      <button id="gameSettingsButton" class="lobbySettingsButton gameSettingsButton" type="button" aria-label="Settings">
+        <span aria-hidden="true">⚙</span>
+      </button>
+
+      <div id="gameSettingsOverlay" class="lobbySettingsOverlay gameSettingsOverlay" hidden>
+        <section class="lobbySettingsPanel gameSettingsPanel" role="dialog" aria-modal="true" aria-label="Settings">
+          <span class="lobbyModeName">Settings</span>
+          <label class="settingsVolumeControl">
+            <span>
+              <strong>Âm thanh</strong>
+              <em id="gameSfxVolumeValue">Mức 3/5</em>
+            </span>
+            <input id="gameSfxVolumeSlider" type="range" min="1" max="5" step="1" value="3">
+          </label>
+          <button id="gameSettingsNewGameButton" class="lobbyStartBtn" type="button">Ván mới</button>
+          <button id="gameSettingsLobbyButton" class="lobbyStartBtn" type="button">Về sảnh</button>
+          <button id="gameSettingsCloseButton" class="lobbyBackBtn" type="button">Đóng</button>
+        </section>
+      </div>
+
+      <div id="gameConfirmOverlay" class="lobbySettingsOverlay gameConfirmOverlay" hidden>
+        <section class="lobbySettingsPanel gameConfirmPanel" role="dialog" aria-modal="true" aria-label="Xác nhận">
+          <span id="gameConfirmTitle" class="lobbyModeName">Xác nhận</span>
+          <p id="gameConfirmText" class="gameConfirmText"></p>
+          <div class="gameConfirmActions">
+            <button id="gameConfirmCancelButton" class="lobbyBackBtn" type="button">Không</button>
+            <button id="gameConfirmAcceptButton" class="lobbyStartBtn" type="button">Đồng ý</button>
+          </div>
+        </section>
+      </div>
+
+      <section id="lobbyView" class="lobbyView" aria-label="Lobby">
+        <button id="lobbyProfileChip" class="lobbyProfileChip" type="button" aria-label="Chỉnh hồ sơ">
+          <span class="lobbyProfileAvatarFrame">
+            <img id="lobbyProfileChipAvatar" src="assets/avatars/1.png" alt="">
+          </span>
+          <span id="lobbyProfileChipName">Bạn</span>
+        </button>
+        <button id="lobbySettingsButton" class="lobbySettingsButton" type="button" aria-label="Settings">
+          <span aria-hidden="true">⚙</span>
+        </button>
+        <div class="lobbyContent">
+          <header class="lobbyHeader">
+            <div id="lobbyHeroCards" class="lobbyHeroCards" aria-hidden="true"></div>
+            <h1 id="lobbyTitle">Cướp Rau Quả</h1>
+            <span id="lobbySubtitle">Tạo hồ sơ</span>
+          </header>
+
+          <div id="lobbyProfileView" class="lobbyPanel" hidden>
+            <button id="lobbyProfileCloseButton" class="lobbyProfileCloseButton" type="button" aria-label="Đóng">×</button>
+            <span class="lobbyModeName">Tạo nhân vật</span>
+            <label class="lobbyNameField">
+              <span>Nhập tên</span>
+              <input id="lobbyPlayerName" type="text" maxlength="8" autocomplete="nickname" placeholder="Tên tối đa 8 ký tự">
+            </label>
+            <div class="lobbyPlayerPicker" data-lobby-player="0">
+              <div class="lobbyPlayerHeader">
+                <strong>Chọn Avatar</strong>
+              </div>
+              <div id="lobbyAvatarGrid0" class="lobbyAvatarGrid" role="listbox" aria-label="Chọn avatar của bạn"></div>
+            </div>
+            <button id="lobbyProfileContinueButton" class="lobbyStartBtn" type="button">Tiếp tục</button>
+          </div>
+
+          <div id="lobbyModeView" class="lobbyModes" aria-label="Chế độ chơi">
+            <button id="lobbyModeSolo" class="lobbyModeCard" type="button" data-lobby-mode="solo">
+              <strong>Solo</strong>
+              <span>Chơi với Bot</span>
+            </button>
+            <button id="lobbyModeDuel" class="lobbyModeCard" type="button" data-lobby-mode="duel">
+              <strong>Duel</strong>
+              <span>Tạo hoặc vào phòng</span>
+            </button>
+          </div>
+
+          <div id="lobbySetupView" class="lobbyPanel lobbySoloPanel" hidden>
+            <div class="lobbyDifficulty">
+              <span>Độ khó Bot</span>
+              <div class="lobbyDifficultyOptions" role="radiogroup" aria-label="Độ khó Bot">
+                <button class="lobbyDifficultyButton active" type="button" data-bot-difficulty="easy">Dễ</button>
+                <button class="lobbyDifficultyButton" type="button" data-bot-difficulty="normal">Vừa</button>
+                <button class="lobbyDifficultyButton" type="button" data-bot-difficulty="hard">Khó</button>
+              </div>
+            </div>
+            <div class="lobbyFooterActions">
+              <button id="lobbyBackButton" class="lobbyBackBtn" type="button">Quay lại</button>
+              <button id="lobbyStartButton" class="lobbyStartBtn" type="button">Bắt đầu</button>
+            </div>
+          </div>
+
+          <div id="lobbyDuelView" class="lobbyDuelPanel" hidden>
+            <span class="lobbyModeName">Đối kháng</span>
+            <p class="lobbyDuelIntro">Tạo hoặc tham gia phòng online.</p>
+            <button id="lobbyCreateRoomButton" class="lobbyStartBtn" type="button">Tạo phòng</button>
+            <div class="lobbyDuelJoinRow">
+              <label class="lobbyRoomField">
+                <span class="srOnly">Mã phòng</span>
+                <input id="lobbyRoomCodeInput" type="text" maxlength="4" inputmode="numeric" pattern="[0-9]*" placeholder="Mã phòng">
+              </label>
+              <button id="lobbyJoinRoomButton" class="lobbyBackBtn" type="button">Vào</button>
+            </div>
+            <p id="lobbyDuelNote" class="lobbyDuelNote">Tạo hoặc tham gia phòng online.</p>
+            <button id="lobbyDuelBackButton" class="lobbyBackBtn" type="button">Quay lại</button>
+          </div>
+
+          <div id="lobbyWaitingView" class="lobbyWaitingPanel" hidden>
+            <span class="lobbyWaitingKicker">Phòng chờ</span>
+            <strong id="lobbyRoomCode" class="lobbyRoomCode">Phòng: 0000</strong>
+            <div id="lobbyWaitingSlots" class="lobbyWaitingSlots" aria-label="Người chơi trong phòng">
+            </div>
+            <p id="lobbyWaitingText" class="lobbyModeNote">Đang chờ người chơi khác...</p>
+            <div class="lobbyRoomActions">
+              <button id="lobbyRoomStartButton" class="lobbyStartBtn" type="button">Bắt đầu</button>
+              <button id="lobbyWaitingBackButton" class="lobbyBackBtn" type="button">Rời phòng</button>
+            </div>
+          </div>
+        </div>
+
+        <div id="lobbySettingsOverlay" class="lobbySettingsOverlay" hidden>
+          <section class="lobbySettingsPanel" role="dialog" aria-modal="true" aria-label="Settings">
+            <span class="lobbyModeName">Settings</span>
+            <label class="settingsVolumeControl">
+              <span>
+                <strong>Âm thanh</strong>
+                <em id="lobbySfxVolumeValue">Mức 3/5</em>
+              </span>
+              <input id="lobbySfxVolumeSlider" type="range" min="1" max="5" step="1" value="3">
+            </label>
+            <button id="lobbySettingsCloseButton" class="lobbyStartBtn" type="button">Đóng</button>
+          </section>
+        </div>
+      </section>
+    </main>
+
+    <aside id="debugPanel" class="debugPanel" hidden>
+      <div class="debugHeader">
+        <h2>Debug</h2>
+        <span>Phím D</span>
+      </div>
+      <div class="debugActions">
+        <button id="debugAnimationMode" class="debugWide" type="button">Animation test: OFF</button>
+        <label class="debugCardSearch debugWide">
+          <span>Thêm lá theo tên</span>
+          <input id="debugCardSearch" type="search" list="debugCardSuggestions" autocomplete="off" placeholder="Gõ tên lá bài">
+          <datalist id="debugCardSuggestions"></datalist>
+        </label>
+        <button id="debugAddNamedP1" type="button">Thêm tên P1</button>
+        <button id="debugAddNamedP2" type="button">Thêm tên P2</button>
+        <button id="debugAddP1" type="button">Thêm bài P1</button>
+        <button id="debugAddP2" type="button">Thêm bài P2</button>
+        <button id="debugDrawP1" type="button">Rút bài P1</button>
+        <button id="debugDrawP2" type="button">Rút bài P2</button>
+        <button class="debugKeywordButton" type="button" data-debug-keyword="FRENZY" data-debug-player="0">P1 Đánh 2 lần</button>
+        <button class="debugKeywordButton" type="button" data-debug-keyword="FRENZY" data-debug-player="1">P2 Đánh 2 lần</button>
+        <button class="debugKeywordButton" type="button" data-debug-keyword="HUNTER" data-debug-player="0">P1 Bắn tỉa</button>
+        <button class="debugKeywordButton" type="button" data-debug-keyword="HUNTER" data-debug-player="1">P2 Bắn tỉa</button>
+        <button class="debugKeywordButton" type="button" data-debug-keyword="POISONOUS" data-debug-player="0">P1 POISONOUS</button>
+        <button class="debugKeywordButton" type="button" data-debug-keyword="POISONOUS" data-debug-player="1">P2 POISONOUS</button>
+        <button class="debugKeywordButton" type="button" data-debug-keyword="SNEAKY" data-debug-player="0">P1 Tàng hình</button>
+        <button class="debugKeywordButton" type="button" data-debug-keyword="SNEAKY" data-debug-player="1">P2 Tàng hình</button>
+        <button class="debugKeywordButton" type="button" data-debug-keyword="TOUGH" data-debug-player="0">P1 Khiên</button>
+        <button class="debugKeywordButton" type="button" data-debug-keyword="TOUGH" data-debug-player="1">P2 Khiên</button>
+        <button id="debugPlayerAttack" class="debugWide" type="button">P1 attack random</button>
+        <button id="debugBotAttack" class="debugWide" type="button">Bot attack random</button>
+      </div>
+    </aside>
+
+    <div id="remoteMessage" class="remoteMessage" aria-live="polite" hidden>
+      <div class="remoteMessagePanel">
+        <strong id="remoteMessageTitle">Remote Message</strong>
+        <p id="remoteMessageText"></p>
+      </div>
+    </div>
+
+    <dialog id="choiceDialog">
+      <form method="dialog">
+        <h2 id="choiceTitle">Chọn</h2>
+        <p id="choiceText"></p>
+        <div id="choiceCardPreview" class="choiceCardPreview" hidden></div>
+        <div id="choiceOptions" class="choiceOptions"></div>
+      </form>
+    </dialog>
+
+    <dialog id="cardInspectDialog" class="cardInspectDialog">
+      <div id="cardInspectContent"></div>
+    </dialog>
+
+    <div id="discardBackdrop" class="discardBackdrop" hidden></div>
+
+    <dialog id="discardDialog" class="discardDialog">
+      <div class="discardDialogShell">
+        <div class="discardDialogHeader">
+          <h2 id="discardDialogTitle">Mộ bài</h2>
+        </div>
+        <div id="discardDialogCards" class="discardDialogCards"></div>
+      </div>
+    </dialog>
+
+    <dialog id="gameOverDialog" class="gameOverDialog">
+      <div class="gameOverShell">
+        <img id="gameOverBanner" class="gameOverBanner" alt="Thắng" hidden>
+        <h2 id="gameOverTitle" class="srOnly">Thắng</h2>
+        <p id="gameOverText"></p>
+        <button id="gameOverNewGame" type="button">Ván mới</button>
+      </div>
+    </dialog>
+
+    <dialog id="rulesDialog">
+      <form method="dialog">
+        <h2>Luật nhanh</h2>
+        <p>Mỗi người bắt đầu với 3 LP, 2 Mindbug, 5 lá trên tay và 5 lá trong chồng rút.</p>
+        <p>Trong lượt, chỉ chọn một hành động: chơi 1 Quái vật hoặc tấn công bằng 1 Quái vật trên sân.</p>
+        <p>Khi chơi Quái vật, đối thủ có thể dùng Mindbug để cướp lá đó. Nếu bị cướp, đối thủ nhận Quái vật và kích hoạt hiệu ứng Chơi, người bị cướp được đi tiếp.</p>
+        <p>Khi tấn công, đối thủ có thể chặn bằng Quái vật hợp lệ. Nếu không chặn, mất 1 LP.</p>
+        <button type="submit">Đóng</button>
+      </form>
+    </dialog>
+
+    <script type="module" src="src/force-reload.js?v=27"></script>
+    <script type="module" src="src/game.js?v=235"></script>
+  </body>
+</html>
