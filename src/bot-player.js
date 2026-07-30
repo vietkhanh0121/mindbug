@@ -1732,7 +1732,9 @@ function chooseMindbug(card, state, helpers, botIndex, config) {
 
   stealSim.players[botIndex].mindbugs = Math.max(0, stealSim.players[botIndex].mindbugs - 1);
   stealSim.players[botIndex].board.push(stolenCard);
+  applySimPlayAbility(stealSim, stolenCard, botIndex, enemyIndex, helpers);
   passSim.players[enemyIndex].board.push(passedCard);
+  applySimPlayAbility(passSim, passedCard, enemyIndex, botIndex, helpers);
 
   const stealScore = searchPath(stealSim, enemyIndex, botIndex, helpers, deadline, mindbugDepth, branchLimit, -Infinity, Infinity);
   const passScore = Date.now() >= deadline
@@ -1741,10 +1743,95 @@ function chooseMindbug(card, state, helpers, botIndex, config) {
 
   const stolenDanger = simTotalFaceDamage(stealSim, enemyIndex, helpers);
   const passDanger = simTotalFaceDamage(passSim, enemyIndex, helpers);
+  const originalBotBoardIds = new Set(state.players[botIndex].board.map(boardCard => boardCard.id));
+  const retainedAfterSteal = stealSim.players[botIndex].board.filter(boardCard => originalBotBoardIds.has(boardCard.id));
+  const retainedAfterPass = passSim.players[botIndex].board.filter(boardCard => originalBotBoardIds.has(boardCard.id));
+  const boardCardsSaved = retainedAfterSteal.length - retainedAfterPass.length;
+  const boardValueSaved = retainedAfterSteal.reduce(
+    (total, boardCard) => total + scoreSimCard(boardCard, stealSim, botIndex, helpers),
+    0
+  ) - retainedAfterPass.reduce(
+    (total, boardCard) => total + scoreSimCard(boardCard, passSim, botIndex, helpers),
+    0
+  );
   const mindbugCost = state.players[botIndex].mindbugs <= 1 ? 12 : 5;
   const emergencyBonus = passDanger >= state.players[botIndex].life ? 240 : passDanger >= state.players[botIndex].life - 1 ? 80 : 0;
+  const boardPreservationBonus = Math.max(0, boardCardsSaved) * 45 + Math.max(0, boardValueSaved) * 1.5;
+  const lifeSaved = Math.max(
+    0,
+    stealSim.players[botIndex].life - passSim.players[botIndex].life
+  );
+  const learnedCounterBonus = learnedMindbugCounterBonus(card, state, botIndex, helpers)
+    + lifeSaved * 140;
   const stealPenalty = stolenDanger >= state.players[botIndex].life ? 160 : stolenDanger * 22;
-  return stealScore + emergencyBonus - stealPenalty - mindbugCost > passScore ? "steal" : "pass";
+  return stealScore + emergencyBonus + boardPreservationBonus + learnedCounterBonus - stealPenalty - mindbugCost > passScore ? "steal" : "pass";
+}
+
+function learnedMindbugCounterBonus(card, state, botIndex, helpers) {
+  if (!helpers.creatureAbilitiesEnabled) return 0;
+  const bot = state.players[botIndex];
+  const enemyIndex = 1 - botIndex;
+  const enemy = state.players[enemyIndex];
+  const power = target => simPower(target, state, botIndex, helpers);
+  const targetValue = target => scoreSimCard(target, state, botIndex, helpers);
+
+  if (card.name === "Killer Bee") return bot.life <= 1 ? 1000 : 90;
+  if (card.name === "Chuckling Chimpborg") {
+    const incomingLifeLoss = bot.mindbugs;
+    return incomingLifeLoss >= bot.life
+      ? 1000
+      : incomingLifeLoss * 180;
+  }
+  if (card.name === "Kangasaurus Rex") {
+    const vulnerable = bot.board.filter(target => power(target) <= 4);
+    return vulnerable.reduce((sum, target) => sum + 55 + targetValue(target) * 1.5, 0);
+  }
+  if (card.name === "Turtle Toaster") {
+    return bot.board
+      .filter(target => {
+        const targetPower = power(target);
+        return targetPower >= 4 && targetPower <= 6;
+      })
+      .sort((a, b) => targetValue(b) - targetValue(a))
+      .slice(0, 2)
+      .reduce((sum, target) => sum + 35 + targetValue(target), 0);
+  }
+  if (card.name === "Brain Fly") {
+    const targets = bot.board.filter(target => power(target) >= 6);
+    return targets.length ? 70 + Math.max(...targets.map(targetValue)) * 1.5 : 0;
+  }
+  if (card.name === "Tiger Squirrel") {
+    const targets = bot.board.filter(target => power(target) >= 7);
+    return targets.length ? 65 + Math.max(...targets.map(targetValue)) : 0;
+  }
+  if (card.name === "Ferret Bomber") return Math.min(2, bot.hand.length) * 55;
+  if (card.name === "Hungry Hungry Hamster") return bot.hand.length ? 75 : 0;
+  if (card.name === "Dr. Orange U. Tan") {
+    const canBounceBoard = enemy.life > 1 && bot.board.length - enemy.board.length >= 2;
+    return canBounceBoard ? 70 + bot.board.length * 35 : 0;
+  }
+  if (card.name === "Mysterious Mermaid") {
+    return bot.life > enemy.life ? (bot.life - enemy.life) * 70 : 0;
+  }
+  if (card.name === "Axolotl Healer") return enemy.life <= 2 ? 55 : 20;
+
+  // The 1,000-game run showed these cards converting a Mindbug into durable
+  // pressure or a strong counter significantly more often than a plain pass.
+  const learnedPressureBonus = {
+    "Lone Yeti": 95,
+    "The Lurker": 90,
+    "Luchataur": 80,
+    "Turf The Surfer": 75,
+    "Explosive Toad": 75,
+    "Radioactive Rabbit": 65,
+    "Creep From The Deep": 60,
+    "Kitsunsei": 55,
+    "The Experiment": bot.board.length && enemy.board.length ? 80 : 0,
+    "Utility Bug": [...bot.board, ...enemy.board].some(target => /^Play:/i.test(target.ability ?? "")) ? 70 : 0,
+    "Cake Trickster": bot.board.some(target => canSimAttack(target, state, botIndex, helpers)) ? 65 : 0,
+    "Deathweaver": bot.hand.some(target => target.ability !== "NONE") ? 55 : 20
+  };
+  return learnedPressureBonus[card.name] ?? 0;
 }
 
 function scoreAttack(card, state, helpers) {
