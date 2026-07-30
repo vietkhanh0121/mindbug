@@ -1,4 +1,4 @@
-import { createMindbugBot } from "./bot-player.js?v=22";
+import { createMindbugBot } from "./bot-player.js?v=26";
 import { GameAnimations } from "./game-animations.js?v=4";
 import { getSfxVolume, getSfxVolumeLevel, playSoundEffect, setSfxVolumeLevel, unlockAudio } from "./sound.js?v=13";
 import { io } from "socket.io-client";
@@ -1492,6 +1492,13 @@ async function handleAuthoritativeDuelUpdate(payload = {}) {
 async function animateDuelEvent(event, nextState, options = {}) {
   if (!event?.type || hasWinner()) return;
   syncCardAttackStateFromNextState(event, nextState);
+  const lethalLifeTransition = nextState?.winner !== null
+    && nextState?.winner !== undefined
+    && nextState.players?.some(player => Number(player?.life) <= 0);
+  if (lethalLifeTransition) {
+    await playDuelLifeDeltaFxFromStateDiff(state, nextState, { forceImpact: true });
+    return;
+  }
   const opponentAbilityCard = opponentAbilityCardFromEvent(event);
   if (opponentAbilityCard) setOpponentAbilityMessage(opponentAbilityCard);
   const deferredLifeDelta = shouldDeferDuelLifeDelta(event);
@@ -3451,6 +3458,7 @@ async function resolvePlayAbility(card, ownerIndex) {
         : owner.life > 1 && enemy.board.length - owner.board.length >= 2;
       if (!activate) break;
       await loseLife(owner, 1, { screenImpact: ownerIndex === 0 });
+      if (hasWinner()) break;
       const returned = [...enemy.board];
       for (const target of returned) {
         await animateCardReturnToHand(target.id, 1 - ownerIndex);
@@ -3473,15 +3481,35 @@ async function resolvePlayAbility(card, ownerIndex) {
     case "Earwig Assassin": {
       const creaturesInPlay = state.players.flatMap(player => [...player.board]);
       const canActivate = owner.hand.length > 0 && creaturesInPlay.length > 0;
-      const activate = canActivate && (ownerIndex === 0 ? await waitForEarwigChoice(card, ownerIndex) : true);
+      const activate = canActivate && (
+        ownerIndex === 0
+          ? await waitForEarwigChoice(card, ownerIndex)
+          : bot.chooseOption(
+            { type: "earwig", actorIndex: ownerIndex, card },
+            state,
+            botHelpers()
+          ) === "activate"
+      );
       if (!activate) break;
       await chooseCardsToDiscard(ownerIndex, ownerIndex, card, 1);
-      const candidates = state.players.flatMap(player => [...player.board]);
+      const candidates = ownerIndex === BOT_INDEX
+        ? [...enemy.board]
+        : state.players.flatMap(player => [...player.board]);
       if (candidates.length) {
         showRemoteMessage("Chọn Quái vật để giết", "", { sticky: ownerIndex === 0 });
         const pickedId = ownerIndex === 0
           ? await pickDefeatTargetFromBoard(candidates, state.active, null, card, ownerIndex)
-          : randomItem(candidates)?.id;
+          : bot.chooseOption(
+            {
+              type: "defeat",
+              actorIndex: ownerIndex,
+              ownerIndex: 1 - ownerIndex,
+              cards: candidates,
+              sourceCard: card
+            },
+            state,
+            botHelpers()
+          );
         clearRemoteMessage();
         const targetOwnerIndex = state.players.findIndex(player => player.board.some(target => target.id === pickedId));
         if (targetOwnerIndex >= 0) await defeatCreature(pickedId, targetOwnerIndex);
@@ -4128,13 +4156,14 @@ async function attack(cardId) {
 
   await resolveAttackAbility(attacker, attackerIndex);
   checkGameOver();
-  if (hasWinner() || !currentPlayer().board.some(card => card.id === attacker.id)) {
+  if (hasWinner()) {
+    if (randomPlan) debugRandomAttackPlan = null;
+    render();
+    return;
+  }
+  if (!currentPlayer().board.some(card => card.id === attacker.id)) {
     if (randomPlan) debugRandomAttackPlan = null;
     if (attackIntentEntered) await exitAttackIntent(attacker.id, attackerIndex);
-    if (hasWinner()) {
-      render();
-      return;
-    }
     await waitAfterBotAction(attackerIndex);
     endTurn();
     return;
@@ -5097,6 +5126,7 @@ function takeRandom(cards, amount) {
 }
 
 async function loseLife(player, amount, options = {}) {
+  if (amount <= 0 || hasWinner()) return;
   playSoundEffect("lifeLoss");
   player.life -= amount;
   if (options.scoreboardOnly) {
@@ -5105,14 +5135,19 @@ async function loseLife(player, amount, options = {}) {
     render();
   }
   const playerIndex = state.players.indexOf(player);
-  const impactPromise = options.screenImpact && state.players.indexOf(player) === 0
+  const isLethal = player.life <= 0;
+  const impactPromise = (isLethal || options.screenImpact)
     ? animations.screenImpact()
     : null;
   await animations.lifeLoss(playerIndex, amount);
   if (impactPromise) await impactPromise;
+  checkGameOver();
+  if (hasWinner()) {
+    render();
+    return;
+  }
   await triggerHyenixFromDiscard(playerIndex);
   checkGameOver();
-  if (hasWinner()) render();
 }
 
 async function gainLife(player, amount) {
@@ -5133,16 +5168,21 @@ async function setLife(player, amount) {
     renderScoreboardSafe();
     await animations.lifeGain(playerIndex, delta);
   }
-  if (playerIndex === 0 && delta < 0) {
+  if (delta < 0 && (playerIndex === 0 || amount <= 0)) {
     playSoundEffect("lifeLoss");
     renderScoreboardSafe();
     await Promise.all([
-      animations.lifeLoss(0, Math.abs(delta)),
+      animations.lifeLoss(playerIndex, Math.abs(delta)),
       animations.screenImpact()
     ]);
   } else if (delta < 0) {
     renderScoreboardSafe();
     await animations.lifeLoss(playerIndex, Math.abs(delta));
+  }
+  checkGameOver();
+  if (hasWinner()) {
+    render();
+    return;
   }
   if (delta < 0) await triggerHyenixFromDiscard(playerIndex);
   checkGameOver();
@@ -5203,7 +5243,7 @@ async function resolveHyenixChoicePrompt(choice) {
   prompt.resolve(choice);
 }
 
-async function playDuelLifeDeltaFxFromStateDiff(previousState, nextState) {
+async function playDuelLifeDeltaFxFromStateDiff(previousState, nextState, options = {}) {
   if (!duelModeActive || !previousState || !nextState) return;
   const deltas = [];
   const fxPromises = [];
@@ -5225,7 +5265,7 @@ async function playDuelLifeDeltaFxFromStateDiff(previousState, nextState) {
     } else {
       playSoundEffect("lifeLoss");
       fxPromises.push(animations.lifeLoss(index, Math.abs(delta)));
-      if (index === 0) fxPromises.push(animations.screenImpact());
+      if (index === 0 || options.forceImpact) fxPromises.push(animations.screenImpact());
     }
   }
   if (fxPromises.length) await Promise.all(fxPromises);
@@ -5260,8 +5300,16 @@ function finishGame(winnerIndex, reason) {
   hunterAttackPrompt = null;
   hunterTargetSelection = null;
   frenzySecondAttackPrompt = null;
+  receivedCardChoicePrompt = null;
+  hyenixChoicePrompt = null;
+  drOrangeChoicePrompt = null;
+  earwigChoicePrompt = null;
+  utilityKeywordSelection = null;
   pendingMindbug = null;
   choicePromptActorIndex = null;
+  activeChoicePromptContext = null;
+  activeChoicePromptResolve = null;
+  activeChoicePreviousPhase = null;
   debugTargetCardRect = null;
   clearCardAnimationState();
   choiceDepth = 0;

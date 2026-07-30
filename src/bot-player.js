@@ -42,6 +42,28 @@ export function createMindbugBot(botIndex = 1, config = {}) {
 
     if (context.type === "frenzy") return "again";
 
+    if (context.type === "earwig") {
+      const botPlayer = state.players[botIndex];
+      const enemy = state.players[1 - botIndex];
+      if (!botPlayer.hand.length || !enemy.board.length) return "pass";
+      const discardValue = Math.min(...botPlayer.hand.map(
+        card => scoreCard(card, state, helpers, botIndex)
+      ));
+      const bestTargetValue = Math.max(...enemy.board.map(
+        card => scoreCard(card, state, helpers, 1 - botIndex)
+      ));
+      const urgentTarget = enemy.board.some(card => (
+        helpers.canAttack(card, 1 - botIndex)
+        && (
+          helpers.cardKeywords(card, 1 - botIndex).includes("SNEAKY")
+          || helpers.directDamage(card) >= botPlayer.life
+        )
+      ));
+      return urgentTarget || bestTargetValue >= Math.max(5, discardValue - 1)
+        ? "activate"
+        : "pass";
+    }
+
     if (context.type === "block") {
       const best = context.cards
         .map(card => ({ card, score: scoreBlock(card, context.attacker, state, helpers) }))
@@ -375,10 +397,31 @@ function scoreHunterTarget(attacker, target, state, helpers, attackerIndex, defe
   const targetPower = helpers.cardPower(target, defenderIndex);
   const attackerKeywords = helpers.cardKeywords(attacker, attackerIndex);
   const targetKeywords = helpers.cardKeywords(target, defenderIndex);
-  const killsTarget = attackerKeywords.includes("POISONOUS") || attackerPower >= targetPower;
-  const losesAttacker = targetKeywords.includes("POISONOUS") || targetPower >= attackerPower;
+  const { defeatAttacker: losesAttacker, defeatBlocker: killsTarget } = predictedCombatDefeats(
+    attacker,
+    target,
+    attackerPower,
+    targetPower,
+    attackerKeywords,
+    targetKeywords,
+    helpers.creatureAbilitiesEnabled
+  );
   let score = scoreCard(target, state, helpers, defenderIndex);
   score += hunterSneakyTargetBonus(target, state, helpers, attackerIndex, defenderIndex);
+  if (attackerKeywords.includes("POISONOUS")) {
+    const freshShield = targetKeywords.includes("TOUGH") && target.damage < 1;
+    const threat = combatThreatPriority(
+      target,
+      targetPower,
+      targetKeywords,
+      helpers.canAttack(target, defenderIndex),
+      state.players[attackerIndex].life,
+      helpers.directDamage(target)
+    );
+    score += freshShield ? threat * 0.25 : threat;
+    if (attackerPower <= 4 && targetPower >= 6) score += 22;
+    if (targetPower <= 3 && threat < 18) score -= 18;
+  }
   if (!killsTarget) score -= 8;
   if (losesAttacker) score -= scoreCard(attacker, state, helpers, attackerIndex) * 0.7;
   if (attackerKeywords.includes("TOUGH") && losesAttacker && attacker.damage < 1) score += 4;
@@ -1210,6 +1253,20 @@ function applySimPlayAbility(sim, card, ownerIndex, enemyIndex, helpers) {
   if (card.name === "Chuckling Chimpborg") {
     sim.players[enemyIndex].life -= sim.players[enemyIndex].mindbugs;
   }
+  if (card.name === "Earwig Assassin" && sim.players[ownerIndex].hand.length && sim.players[enemyIndex].board.length) {
+    const worstDiscard = sim.players[ownerIndex].hand
+      .map(target => ({ target, score: scoreSimCard(target, sim, ownerIndex, helpers) }))
+      .sort((a, b) => a.score - b.score)[0];
+    const bestTarget = sim.players[enemyIndex].board
+      .map(target => ({ target, score: scoreSimCard(target, sim, enemyIndex, helpers) }))
+      .sort((a, b) => b.score - a.score)[0];
+    if (bestTarget && worstDiscard && bestTarget.score >= Math.max(5, worstDiscard.score - 1)) {
+      const discardIndex = sim.players[ownerIndex].hand.findIndex(target => target.id === worstDiscard.target.id);
+      if (discardIndex >= 0) sim.players[ownerIndex].discard.push(sim.players[ownerIndex].hand.splice(discardIndex, 1)[0]);
+      simDefeatCreature(sim, bestTarget.target.id, enemyIndex, helpers);
+      drawSimToFive(sim.players[ownerIndex]);
+    }
+  }
   updateSimWinner(sim);
 }
 
@@ -1501,10 +1558,15 @@ function simCombat(sim, attackerId, blockerId, attackerIndex, blockerIndex, help
 
   const attackerPower = simPower(attacker, sim, attackerIndex, helpers);
   const blockerPower = simPower(blocker, sim, blockerIndex, helpers);
-  const attackerPoison = simKeywords(attacker, sim, attackerIndex, helpers).includes("POISONOUS");
-  const blockerPoison = simKeywords(blocker, sim, blockerIndex, helpers).includes("POISONOUS");
-  const defeatAttacker = blockerPoison || blockerPower >= attackerPower;
-  const defeatBlocker = attackerPoison || attackerPower >= blockerPower;
+  const { defeatAttacker, defeatBlocker } = predictedCombatDefeats(
+    attacker,
+    blocker,
+    attackerPower,
+    blockerPower,
+    simKeywords(attacker, sim, attackerIndex, helpers),
+    simKeywords(blocker, sim, blockerIndex, helpers),
+    helpers.creatureAbilitiesEnabled
+  );
 
   if (defeatAttacker) simDamageOrDefeat(sim, attackerId, attackerIndex, helpers);
   if (defeatBlocker) simDamageOrDefeat(sim, blockerId, blockerIndex, helpers);
@@ -1570,8 +1632,15 @@ function scoreSimBlock(blocker, attacker, sim, attackerIndex, blockerIndex, help
   const attackerPower = simPower(attacker, sim, attackerIndex, helpers);
   const blockerKeywords = simKeywords(blocker, sim, blockerIndex, helpers);
   const attackerKeywords = simKeywords(attacker, sim, attackerIndex, helpers);
-  const killsAttacker = blockerKeywords.includes("POISONOUS") || blockerPower >= attackerPower;
-  const losesBlocker = attackerKeywords.includes("POISONOUS") || attackerPower >= blockerPower;
+  const { defeatAttacker: killsAttacker, defeatBlocker: losesBlocker } = predictedCombatDefeats(
+    attacker,
+    blocker,
+    attackerPower,
+    blockerPower,
+    attackerKeywords,
+    blockerKeywords,
+    helpers.creatureAbilitiesEnabled
+  );
   const lifeAfterPass = sim.players[blockerIndex].life - 1;
   let score = 3 + 28;
   if (lifeAfterPass <= 0) score += 1000;
@@ -1579,6 +1648,19 @@ function scoreSimBlock(blocker, attacker, sim, attackerIndex, blockerIndex, help
   if (lifeAfterPass === 2) score += 20;
   if (killsAttacker) score += scoreSimCard(attacker, sim, attackerIndex, helpers);
   if (losesBlocker) score -= scoreSimCard(blocker, sim, blockerIndex, helpers);
+  if (blockerKeywords.includes("POISONOUS")) {
+    const freshShield = attackerKeywords.includes("TOUGH") && attacker.damage < 1;
+    const threat = combatThreatPriority(
+      attacker,
+      attackerPower,
+      attackerKeywords,
+      canSimAttack(attacker, sim, attackerIndex, helpers),
+      sim.players[blockerIndex].life,
+      simProjectedFaceDamage(attacker, sim, attackerIndex, blockerIndex, helpers)
+    );
+    score += freshShield ? threat * 0.2 : threat;
+    if (blockerPower <= 4 && attackerPower >= 6) score += 24;
+  }
   return score;
 }
 
@@ -1873,10 +1955,15 @@ function scoreBlock(blocker, attacker, state, helpers) {
   const attackerPower = helpers.cardPower(attacker, 0);
   const blockerKeywords = helpers.cardKeywords(blocker, 1);
   const attackerKeywords = helpers.cardKeywords(attacker, 0);
-  const attackerOutpowered = blockerPower >= attackerPower;
-  const blockerOutpowered = attackerPower >= blockerPower;
-  const killsAttacker = blockerKeywords.includes("POISONOUS") || attackerOutpowered;
-  const losesBlocker = attackerKeywords.includes("POISONOUS") || blockerOutpowered;
+  const { defeatAttacker: killsAttacker, defeatBlocker: losesBlocker } = predictedCombatDefeats(
+    attacker,
+    blocker,
+    attackerPower,
+    blockerPower,
+    attackerKeywords,
+    blockerKeywords,
+    helpers.creatureAbilitiesEnabled
+  );
   const lifeAfterPass = state.players[1].life - 1;
   let score = 3 + 28;
   if (lifeAfterPass <= 0) score += 1000;
@@ -1884,7 +1971,55 @@ function scoreBlock(blocker, attacker, state, helpers) {
   if (lifeAfterPass === 2) score += 20;
   if (killsAttacker) score += scoreCard(attacker, state, helpers, 0);
   if (losesBlocker) score -= scoreCard(blocker, state, helpers, 1);
+  if (blockerKeywords.includes("POISONOUS")) {
+    const freshShield = attackerKeywords.includes("TOUGH") && attacker.damage < 1;
+    const threat = combatThreatPriority(
+      attacker,
+      attackerPower,
+      attackerKeywords,
+      helpers.canAttack(attacker, 0),
+      state.players[1].life,
+      helpers.directDamage(attacker)
+    );
+    score += freshShield ? threat * 0.2 : threat;
+    if (blockerPower <= 4 && attackerPower >= 6) score += 24;
+  }
   return score;
+}
+
+function combatThreatPriority(card, power, keywords, canAttackNow, defenderLife, directDamage) {
+  let threat = Math.max(0, power - 3) * 4;
+  if (keywords.includes("SNEAKY")) threat += 34;
+  if (keywords.includes("FRENZY")) threat += 30;
+  if (keywords.includes("HUNTER")) threat += 8;
+  if (/^(Attack|When this attacks|Khi tấn công)[:\s]/i.test(card.ability ?? "")) threat += 24;
+  if (canAttackNow) threat += 12;
+  if (canAttackNow && directDamage >= defenderLife) threat += 180;
+  if (keywords.includes("SNEAKY") && !keywords.includes("FRENZY") && power <= 3) threat += 6;
+  return threat;
+}
+
+function predictedCombatDefeats(
+  attacker,
+  blocker,
+  attackerPower,
+  blockerPower,
+  attackerKeywords,
+  blockerKeywords,
+  creatureAbilitiesEnabled
+) {
+  const lowerPowerWins = creatureAbilitiesEnabled
+    && (attacker.name === "Sawn" || blocker.name === "Sawn");
+  const attackerLosesPowerFight = lowerPowerWins
+    ? blockerPower <= attackerPower
+    : blockerPower >= attackerPower;
+  const blockerLosesPowerFight = lowerPowerWins
+    ? attackerPower <= blockerPower
+    : attackerPower >= blockerPower;
+  return {
+    defeatAttacker: blockerKeywords.includes("POISONOUS") || attackerLosesPowerFight,
+    defeatBlocker: attackerKeywords.includes("POISONOUS") || blockerLosesPowerFight
+  };
 }
 
 function hasImmediateWin(state, helpers, attackerIndex) {

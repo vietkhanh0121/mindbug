@@ -676,8 +676,10 @@ function resolveServerPlayAbility(state, ownerIndex, card, after = { type: "end-
       owner.life = enemy.life;
       if (owner.life < previousLife) {
         checkServerGameOver(state);
-        const hyenixResult = triggerServerHyenixFromDiscard(state, ownerIndex, after);
-        if (hyenixResult.pending) return hyenixResult;
+        if (state.winner === null) {
+          const hyenixResult = triggerServerHyenixFromDiscard(state, ownerIndex, after);
+          if (hyenixResult.pending) return hyenixResult;
+        }
       }
       return { pending: null, ability: "life-set" };
     case "Axolotl Healer":
@@ -1885,16 +1887,16 @@ function applyGameAction(room, socket, action = {}) {
       const enemyIndex = 1 - pending.ownerIndex;
       const enemy = state.players[enemyIndex];
       owner.life -= 1;
-      for (const card of enemy.board.splice(0)) {
-        card.exhausted = false;
-        card.attacksThisTurn = 0;
-        card.damage = 0;
-        card.originalOwnerIndex = enemyIndex;
-        enemy.hand.push(card);
-        returnedIds.push(card.id);
-      }
       checkServerGameOver(state);
       if (state.winner === null) {
+        for (const card of enemy.board.splice(0)) {
+          card.exhausted = false;
+          card.attacksThisTurn = 0;
+          card.damage = 0;
+          card.originalOwnerIndex = enemyIndex;
+          enemy.hand.push(card);
+          returnedIds.push(card.id);
+        }
         const hyenixResult = triggerServerHyenixFromDiscard(state, pending.ownerIndex, pending.after);
         if (hyenixResult.pending) {
           return { ok: true, event: { type: "ability-dr-orange", actorIndex, sourceCard: pending.sourceCard, activate: true, returnedIds, pending: state.pending } };
