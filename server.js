@@ -947,11 +947,15 @@ function resolveServerAttackAbility(state, ownerIndex, card) {
     return { ability: "life-loss-deferred" };
   }
   if (card.name === "Count Draculeech") {
-    card.countLifeLossAfterAttack = true;
     const candidates = state.players.flatMap((player, targetOwnerIndex) => (
       player.board.map(target => ({ target, ownerIndex: targetOwnerIndex }))
     ));
-    return beginServerPending(state, {
+    state.players[ownerIndex].life -= 1;
+    checkServerGameOver(state);
+    if (state.winner !== null) {
+      return { pending: null, ability: "self-life-loss" };
+    }
+    const defeatPending = {
       type: "defeat",
       actorIndex: ownerIndex,
       ownerIndex: null,
@@ -960,7 +964,15 @@ function resolveServerAttackAbility(state, ownerIndex, card) {
       cardIds: candidates.map(candidate => candidate.target.id),
       allowSkip: false,
       after: continueAfter
+    };
+    const hyenixResult = triggerServerHyenixFromDiscard(state, ownerIndex, {
+      type: "resume-defeat",
+      pending: defeatPending
     });
+    if (hyenixResult.pending) {
+      return { ...hyenixResult, ability: "self-life-loss" };
+    }
+    return beginServerPending(state, defeatPending);
   }
   if (card.name === "Majestic Manticore") {
     const creaturesInPlay = state.players.flatMap((player, targetOwnerIndex) => (

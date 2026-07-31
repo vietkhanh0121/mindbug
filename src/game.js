@@ -1,4 +1,4 @@
-import { createMindbugBot } from "./bot-player.js?v=26";
+import { createMindbugBot } from "./bot-player.js?v=30";
 import { GameAnimations } from "./game-animations.js?v=4";
 import { getSfxVolume, getSfxVolumeLevel, playSoundEffect, setSfxVolumeLevel, unlockAudio } from "./sound.js?v=13";
 import { io } from "socket.io-client";
@@ -709,8 +709,8 @@ let bot = createMindbugBot(BOT_INDEX);
 function configureBotDifficulty() {
   const config = {
     easy: { searchLimitMs: 250, searchDepth: 2, branchLimit: 4, mindbugDepth: 2 },
-    normal: { searchLimitMs: 900, searchDepth: 4, branchLimit: 7, mindbugDepth: 3 },
-    hard: { searchLimitMs: 1800, searchDepth: 5, branchLimit: 10, mindbugDepth: 4 }
+    normal: { searchLimitMs: 1200, searchDepth: 6, branchLimit: 7, mindbugDepth: 4 },
+    hard: { searchLimitMs: 2400, searchDepth: 8, branchLimit: 10, mindbugDepth: 5 }
   }[botDifficulty] ?? {};
   bot = createMindbugBot(BOT_INDEX, { delay: 1150, afterActionDelay: 900, ...config });
 }
@@ -4305,7 +4305,9 @@ async function resolveAttackAbility(card, ownerIndex) {
       await chooseCardsToDiscard(1 - ownerIndex, ownerIndex, card, 1);
       break;
     case "Count Draculeech": {
-      card.countLifeLossAfterAttack = true;
+      await loseLife(state.players[ownerIndex], 1, { screenImpact: true });
+      log(`${state.players[ownerIndex].name} mất 1 LP bởi ${card.name}.`);
+      if (hasWinner()) break;
       const candidates = state.players.flatMap(player => [...player.board]);
       showRemoteMessage("Chọn Quái vật để giết", "", { sticky: ownerIndex === 0 });
       const pickedId = ownerIndex === 0

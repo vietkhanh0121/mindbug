@@ -7,10 +7,20 @@ export function createMindbugBot(botIndex = 1, config = {}) {
   const mindbugDepth = config.mindbugDepth ?? Math.max(2, searchDepth - 1);
   const memory = loadStrategyMemory(botIndex);
   let learningEpisode = [];
+  let strategicPlan = null;
 
   function chooseTurnAction(state, helpers) {
     try {
-      return chooseOptimalTurnAction(state, helpers, botIndex, { searchLimitMs, searchDepth, branchLimit, memory });
+      strategicPlan = updateStrategicPlan(strategicPlan, state, helpers, botIndex);
+      const action = chooseOptimalTurnAction(state, helpers, botIndex, {
+        searchLimitMs,
+        searchDepth,
+        branchLimit,
+        memory,
+        strategicPlan
+      });
+      strategicPlan.lastAction = action;
+      return action;
     } catch (error) {
       console.warn("Bot search failed, using fast fallback.", error);
       return chooseFastFallbackAction(state, helpers, botIndex);
@@ -70,7 +80,9 @@ export function createMindbugBot(botIndex = 1, config = {}) {
         .sort((a, b) => b.score - a.score)[0];
       const avoidableDamage = 1;
       const botLifeAfterPass = state.players[botIndex].life - avoidableDamage;
+      const losingOpenRace = isLosingDirectRace(cloneState(state), botIndex, helpers);
       if (best && botLifeAfterPass <= 0) return best.card.id;
+      if (best && losingOpenRace && best.score > -20) return best.card.id;
       const enemyThreatAfterPass = realTotalFaceThreat(state, 1 - botIndex, helpers);
       if (best && enemyThreatAfterPass >= state.players[botIndex].life - 1 && !hasImmediateWin(state, helpers, botIndex)) return best.card.id;
       if (best && state.players[botIndex].life <= 2 && best.score > -6) return best.card.id;
@@ -107,6 +119,7 @@ export function createMindbugBot(botIndex = 1, config = {}) {
 
   function startLearningGame() {
     learningEpisode = [];
+    strategicPlan = null;
   }
 
   function recordGameAction(state, action, actorIndex) {
@@ -167,18 +180,22 @@ export function runBotSelfPlay(initialState, helpers = {}, config = {}) {
   let sim = cloneState(initialState);
   const actions = [];
   const learningEpisode = [];
+  const strategicPlans = [null, null];
 
   readySimTurn(sim, sim.active);
   updateSimActionLoss(sim, sim.active, helpers);
   while (sim.winner === null && actions.length < maxTurns) {
     const actorIndex = sim.active;
     const actor = sim.players[actorIndex];
+    strategicPlans[actorIndex] = updateStrategicPlan(strategicPlans[actorIndex], sim, helpers, actorIndex);
     const action = chooseOptimalTurnAction(sim, helpers, actorIndex, {
       searchLimitMs,
       searchDepth,
       branchLimit,
-      memory
+      memory,
+      strategicPlan: strategicPlans[actorIndex]
     });
+    strategicPlans[actorIndex].lastAction = action;
     const source = action.type === "play"
       ? actor.hand.find(card => card.id === action.cardId)
       : actor.board.find(card => card.id === action.cardId);
@@ -239,7 +256,7 @@ function mirrorStateForBot(state, actorIndex, botIndex) {
 }
 
 function chooseOptimalTurnAction(state, helpers, botIndex, config) {
-  const { searchLimitMs, searchDepth, branchLimit, memory } = config;
+  const { searchLimitMs, searchDepth, branchLimit, memory, strategicPlan = null } = config;
   const deadline = Date.now() + searchLimitMs;
   const sim = cloneState(state);
   const forcedWin = findForcedWinAction(sim, botIndex, helpers, {
@@ -253,7 +270,12 @@ function chooseOptimalTurnAction(state, helpers, botIndex, config) {
   }
 
   const candidates = generateActions(sim, botIndex, helpers)
-    .map(action => ({ action, score: quickActionScore(sim, action, botIndex, botIndex, helpers) + strategyMemoryBias(memory, sim, action, botIndex) }))
+    .map(action => ({
+      action,
+      score: quickActionScore(sim, action, botIndex, botIndex, helpers)
+        + strategyMemoryBias(memory, sim, action, botIndex)
+        + strategicPlanActionBias(strategicPlan, sim, action, botIndex, helpers)
+    }))
     .sort((a, b) => b.score - a.score);
 
   if (!candidates.length) return { type: "pass" };
@@ -263,12 +285,234 @@ function chooseOptimalTurnAction(state, helpers, botIndex, config) {
     if (Date.now() >= deadline) break;
     const next = applyAction(sim, candidate.action, botIndex, helpers);
     const score = searchPath(next, 1 - botIndex, botIndex, helpers, deadline, searchDepth, branchLimit, -Infinity, Infinity)
-      + strategyMemoryBias(memory, sim, candidate.action, botIndex);
+      + strategyMemoryBias(memory, sim, candidate.action, botIndex)
+      + strategicPlanActionBias(strategicPlan, sim, candidate.action, botIndex, helpers);
     if (score > best.score) best = { action: candidate.action, score };
   }
 
   rememberStrategy(memory, sim, best.action, best.score, botIndex);
   return best.action;
+}
+
+function updateStrategicPlan(currentPlan, state, helpers, botIndex) {
+  const sim = cloneState(state);
+  const bot = sim.players[botIndex];
+  const enemyIndex = 1 - botIndex;
+  const enemy = sim.players[enemyIndex];
+  const losingRace = isLosingDirectRace(sim, botIndex, helpers);
+  const highThreat = enemy.board.some(card => (
+    simPower(card, sim, enemyIndex, helpers) >= 7
+    || simKeywords(card, sim, enemyIndex, helpers).includes("SNEAKY")
+    || simKeywords(card, sim, enemyIndex, helpers).includes("FRENZY")
+  ));
+  const protectedCard = bot.hand
+    .map(card => ({
+      card,
+      score: scoreSimCard(card, sim, botIndex, helpers)
+        + simAbilityComboScore(card, sim, botIndex, helpers)
+        + Math.max(0, simPlayAbilitySwing(card, sim, botIndex, enemyIndex, helpers))
+        + learnedStrategicCardValue(card, sim, botIndex, helpers)
+    }))
+    .sort((a, b) => b.score - a.score)[0];
+  const baitCard = enemy.mindbugs > 0 && protectedCard
+    ? bot.hand
+      .filter(card => card.id !== protectedCard.card.id)
+      .map(card => ({
+        card,
+        value: scoreSimCard(card, sim, botIndex, helpers),
+        likelyStolen: shouldSimMindbug(card, sim, enemyIndex, helpers)
+      }))
+      .filter(item => item.likelyStolen && item.value + 3 < protectedCard.score)
+      .sort((a, b) => a.value - b.value)[0]
+    : null;
+  const comboCard = bot.hand
+    .map(card => ({ card, score: simAbilityComboScore(card, sim, botIndex, helpers) }))
+    .filter(item => item.score >= 22)
+    .sort((a, b) => b.score - a.score)[0];
+
+  let proposed;
+  if (losingRace || bot.life <= 1) {
+    proposed = { type: "stabilize", priority: 100 };
+  } else if (baitCard && protectedCard.score >= 12) {
+    proposed = {
+      type: "bait-mindbug",
+      priority: 86,
+      baitCardId: baitCard.card.id,
+      protectedCardId: protectedCard.card.id
+    };
+  } else if (comboCard) {
+    proposed = { type: "build-combo", priority: 74, focusCardId: comboCard.card.id };
+  } else if (highThreat) {
+    proposed = { type: "control", priority: 66 };
+  } else {
+    proposed = { type: "pressure", priority: 48 };
+  }
+
+  const previousStillValid = currentPlan && strategicPlanStillValid(currentPlan, sim, botIndex);
+  const opponentChangedPlan = currentPlan && (
+    currentPlan.enemyMindbugs !== enemy.mindbugs
+    || currentPlan.enemyBoardSignature !== strategicBoardSignature(enemy.board)
+    || currentPlan.enemyLife !== enemy.life
+  );
+  const shouldSwitch = !previousStillValid
+    || proposed.priority >= Number(currentPlan.priority ?? 0) + (opponentChangedPlan ? 8 : 22);
+  const next = shouldSwitch
+    ? { ...proposed, turnsHeld: 0 }
+    : { ...currentPlan, turnsHeld: Number(currentPlan.turnsHeld ?? 0) + 1 };
+  next.enemyMindbugs = enemy.mindbugs;
+  next.enemyLife = enemy.life;
+  next.enemyBoardSignature = strategicBoardSignature(enemy.board);
+  return next;
+}
+
+function strategicPlanStillValid(plan, sim, botIndex) {
+  const bot = sim.players[botIndex];
+  const enemy = sim.players[1 - botIndex];
+  if (plan.type === "bait-mindbug") {
+    return enemy.mindbugs > 0
+      && bot.hand.some(card => card.id === plan.baitCardId)
+      && bot.hand.some(card => card.id === plan.protectedCardId);
+  }
+  if (plan.type === "build-combo") {
+    return bot.hand.some(card => card.id === plan.focusCardId);
+  }
+  if (plan.type === "stabilize") return bot.life <= enemy.life || enemy.board.length > bot.board.length;
+  if (plan.type === "control") return enemy.board.length > 0;
+  return true;
+}
+
+function strategicBoardSignature(board) {
+  return board.map(card => `${card.name}:${card.damage ?? 0}`).sort().join("|");
+}
+
+function strategicPlanActionBias(plan, sim, action, ownerIndex, helpers) {
+  if (!plan) return 0;
+  const owner = sim.players[ownerIndex];
+  const enemyIndex = 1 - ownerIndex;
+  const enemy = sim.players[enemyIndex];
+  const card = action.type === "play"
+    ? owner.hand.find(item => item.id === action.cardId)
+    : owner.board.find(item => item.id === action.cardId);
+  if (!card) return 0;
+  const keywords = simKeywords(card, sim, ownerIndex, helpers);
+  let bias = 0;
+
+  if (plan.type === "bait-mindbug" && action.type === "play") {
+    if (card.id === plan.baitCardId) bias += 180;
+    if (card.id === plan.protectedCardId && enemy.mindbugs > 0) bias -= 150;
+  }
+  if (plan.type === "build-combo") {
+    if (action.type === "play" && card.id === plan.focusCardId) bias += 105;
+    if (action.type === "play") bias += simAbilityComboScore(card, sim, ownerIndex, helpers) * 1.5;
+  }
+  if (plan.type === "stabilize") {
+    if (action.type === "attack" && !keywords.includes("HUNTER")) bias -= 95;
+    if (action.type === "play" && keywords.includes("TOUGH")) bias += 65;
+    if (action.type === "play" && keywords.includes("POISONOUS")) bias += 58;
+    if (action.type === "play" && keywords.includes("HUNTER") && enemy.board.length) bias += 42;
+    if (action.type === "play" && simPlayAbilitySwing(card, sim, ownerIndex, enemyIndex, helpers) >= 25) bias += 70;
+  }
+  if (plan.type === "control") {
+    if (action.type === "attack" && keywords.includes("HUNTER")) bias += 70;
+    if (action.type === "play" && simPlayAbilitySwing(card, sim, ownerIndex, enemyIndex, helpers) >= 25) bias += 65;
+    if (action.type === "play" && keywords.includes("POISONOUS")) bias += 35;
+  }
+  if (plan.type === "pressure") {
+    if (action.type === "attack") bias += 42;
+    if (action.type === "play" && keywords.includes("SNEAKY")) bias += 34;
+    if (action.type === "play" && keywords.includes("FRENZY")) bias += 28;
+  }
+  bias += learnedLongHorizonActionBias(sim, action, ownerIndex, helpers);
+  return bias;
+}
+
+function learnedStrategicCardValue(card, sim, ownerIndex, helpers) {
+  const enemy = sim.players[1 - ownerIndex];
+  const values = {
+    "The Lurker": 48,
+    "Dragon Inn": 44,
+    "Rhino Turtle": 38,
+    "Goreagle Alpha": sim.players[ownerIndex].life > 1 ? 40 : -100,
+    "Westside Monster": 34,
+    "Killer Bee": enemy.life <= 1 ? 180 : 42,
+    "Utility Bug": 30,
+    "Compost Dragon": sim.players[ownerIndex].discard.length ? 34 : 12,
+    "Froblin Instigator": 24
+  };
+  return values[card.name] ?? 0;
+}
+
+function learnedLongHorizonActionBias(sim, action, ownerIndex, helpers) {
+  const owner = sim.players[ownerIndex];
+  const enemyIndex = 1 - ownerIndex;
+  const enemy = sim.players[enemyIndex];
+  const card = action.type === "play"
+    ? owner.hand.find(item => item.id === action.cardId)
+    : owner.board.find(item => item.id === action.cardId);
+  if (!card) return 0;
+  let bias = 0;
+
+  if (action.type === "play") {
+    if (card.name === "Killer Bee") {
+      if (enemy.life <= 1) bias += 700;
+      else if (enemy.mindbugs > 0) bias -= 150;
+      else bias -= 35;
+    }
+    if (card.name === "The Lurker") {
+      bias += owner.board.length >= enemy.board.length ? 65 : 22;
+    }
+    if (card.name === "Dragon Inn") {
+      bias += owner.board.length < enemy.board.length ? 82 : 18;
+    }
+    if (card.name === "Froblin Instigator") {
+      bias += owner.board.length * 24;
+    }
+    if (card.name === "Compost Dragon") {
+      const reusable = owner.discard.some(target => target.ability !== "NONE");
+      bias += reusable ? 78 : owner.discard.length ? 34 : -30;
+    }
+    if (card.name === "Utility Bug") {
+      const copyTargets = [...owner.board, ...enemy.board].filter(
+        target => target.id !== card.id && /^Play:/i.test(target.ability ?? "")
+      );
+      bias += copyTargets.length ? 72 + Math.min(3, copyTargets.length) * 12 : -95;
+    }
+    if (card.name === "Turtle Toaster") {
+      const targets = enemy.board.filter(target => {
+        const power = simPower(target, sim, enemyIndex, helpers);
+        return power >= 4 && power <= 6;
+      });
+      bias += targets.length >= 2 ? 110 : targets.length === 1 ? 28 : -80;
+    }
+    if (card.name === "Puffermech") {
+      const targets = enemy.board.filter(target => simPower(target, sim, enemyIndex, helpers) >= 8);
+      bias += targets.length ? 42 + targets.length * 32 : -18;
+    }
+    if (card.name === "Ferret Pacifier") {
+      const readyFinisher = owner.board.some(target => (
+        ["Goreagle Alpha", "The Lurker", "Rhino Turtle", "Luchataur"].includes(target.name)
+      ));
+      if (readyFinisher && enemy.board.length) bias += 62;
+    }
+    if (["Goreagle Alpha", "Rhino Turtle", "Westside Monster"].includes(card.name) && enemy.mindbugs > 0) {
+      const hasBait = owner.hand.some(target => (
+        target.id !== card.id
+        && scoreSimCard(target, sim, ownerIndex, helpers) <= 6
+        && shouldSimMindbug(target, sim, enemyIndex, helpers)
+      ));
+      if (hasBait) bias -= 85;
+    }
+  }
+
+  if (action.type === "attack") {
+    if (card.name === "The Lurker" && owner.board.length > enemy.board.length) bias += 100;
+    if (["Rhino Turtle", "Goreagle Alpha", "Westside Monster"].includes(card.name)) bias += 48;
+    if (card.name === "Froblin Instigator" && owner.board.length >= 3) bias += 35;
+  }
+  if (action.type === "action" && card.name === "Dragon Inn" && owner.board.length < enemy.board.length) {
+    bias += 150;
+  }
+  return bias;
 }
 
 function findForcedWinAction(sim, botIndex, helpers, config) {
@@ -713,6 +957,7 @@ function actionHeuristicScore(sim, action, activeIndex, perspectiveIndex, helper
   }
   score += learnedSelfPlayActionBias(sim, action, activeIndex, helpers);
   score += learnedComebackActionBias(sim, action, activeIndex, helpers);
+  score += learnedLongHorizonActionBias(sim, action, activeIndex, helpers);
   return activeIndex === perspectiveIndex ? score : -score * 0.5;
 }
 
@@ -814,6 +1059,7 @@ function tacticalActionScore(sim, action, activeIndex, perspectiveIndex, helpers
   const enemyIndex = 1 - activeIndex;
   const enemy = sim.players[enemyIndex];
   const isOwnAction = activeIndex === perspectiveIndex;
+  const losingOpenRace = isOwnAction && isLosingDirectRace(sim, perspectiveIndex, helpers);
   let score = (after - before) * 0.25;
 
   if (next.winner === activeIndex) score += isOwnAction ? 5000 : -5000;
@@ -845,12 +1091,22 @@ function tacticalActionScore(sim, action, activeIndex, perspectiveIndex, helpers
       }
       if (keywords.includes("FRENZY")) score += isOwnAction ? 42 : -42;
       if (keywords.includes("HUNTER") && enemy.board.length) score += isOwnAction ? 36 : -36;
+      if (losingOpenRace && !keywords.includes("HUNTER") && next.winner !== activeIndex) score -= 125;
     }
   }
 
   if (action.type === "play") {
     const card = sim.players[activeIndex].hand.find(item => item.id === action.cardId);
-    if (card) score += playPatternScore(card, sim, activeIndex, helpers) * (isOwnAction ? 1 : -0.5);
+    if (card) {
+      score += playPatternScore(card, sim, activeIndex, helpers) * (isOwnAction ? 1 : -0.5);
+      if (losingOpenRace) {
+        const keywords = simKeywords(card, sim, activeIndex, helpers);
+        if (keywords.includes("TOUGH")) score += 48;
+        if (keywords.includes("POISONOUS")) score += 42;
+        if (keywords.includes("HUNTER") && enemy.board.length) score += 35;
+        if (simPlayAbilitySwing(card, sim, activeIndex, enemyIndex, helpers) >= 25) score += 55;
+      }
+    }
   }
 
   return score;
@@ -940,6 +1196,7 @@ function evaluateState(sim, botIndex, helpers) {
   const enemyLifeDanger = offenseDangerScore(enemyIncomingDamage, enemy.life);
   const defenseCoverage = simDefenseCoverage(sim, botIndex, helpers) * 9;
   const sneakyThreatSwing = simSneakyThreatScore(sim, botIndex, helpers);
+  const raceTempo = simDirectRaceTempoScore(sim, botIndex, helpers);
 
   return lifeScore(bot.life)
     - enemyLifeScore(enemy.life)
@@ -953,7 +1210,47 @@ function evaluateState(sim, botIndex, helpers) {
     + botLifeDanger
     + enemyLifeDanger
     + defenseCoverage
-    + sneakyThreatSwing;
+    + sneakyThreatSwing
+    + raceTempo;
+}
+
+function isLosingDirectRace(sim, ownerIndex, helpers) {
+  return simDirectRaceTempoScore(sim, ownerIndex, helpers) < 0;
+}
+
+function simDirectRaceTempoScore(sim, ownerIndex, helpers) {
+  const enemyIndex = 1 - ownerIndex;
+  const ownClock = simDirectRaceClock(sim, ownerIndex, helpers);
+  const enemyClock = simDirectRaceClock(sim, enemyIndex, helpers);
+  if (!Number.isFinite(ownClock) && !Number.isFinite(enemyClock)) return 0;
+  if (!Number.isFinite(ownClock)) return -220;
+  if (!Number.isFinite(enemyClock)) return 120;
+  const ownerActsFirst = sim.active === ownerIndex;
+  if (ownClock === enemyClock) return ownerActsFirst ? 75 : -140;
+  const clockDifference = enemyClock - ownClock;
+  return clockDifference > 0
+    ? 90 + Math.min(3, clockDifference) * 35
+    : -150 + Math.max(-3, clockDifference) * 45;
+}
+
+function simDirectRaceClock(sim, ownerIndex, helpers) {
+  const defenderIndex = 1 - ownerIndex;
+  const raceState = cloneState(sim);
+  readySimTurn(raceState, ownerIndex);
+  const damagePerAction = raceState.players[ownerIndex].board.reduce((best, card) => {
+    if (!canSimAttack(card, raceState, ownerIndex, helpers)) return best;
+    const keywords = simKeywords(card, raceState, ownerIndex, helpers);
+    let damage = 1;
+    if (helpers.creatureAbilitiesEnabled && card.name === "Chameleon Sniper") damage += 1;
+    if (helpers.creatureAbilitiesEnabled && card.name === "Turbo Bug" && raceState.players[defenderIndex].life > 1) {
+      damage = raceState.players[defenderIndex].life;
+    } else if (keywords.includes("FRENZY")) {
+      damage *= 2;
+    }
+    return Math.max(best, damage);
+  }, 0);
+  if (damagePerAction <= 0) return Infinity;
+  return Math.ceil(Math.max(0, raceState.players[defenderIndex].life) / damagePerAction);
 }
 
 function lifeScore(life) {
@@ -1378,6 +1675,8 @@ function applySimAttackAbility(sim, attacker, attackerIndex, defenderIndex, help
   }
   if (attacker.name === "Count Draculeech") {
     sim.players[attackerIndex].life -= 1;
+    updateSimWinner(sim);
+    if (sim.winner !== null) return;
     if (defender.board.length) {
       defeatBestSimTarget(sim, defenderIndex, helpers, () => true);
     } else {
@@ -1836,7 +2135,7 @@ function chooseMindbug(card, state, helpers, botIndex, config) {
     (total, boardCard) => total + scoreSimCard(boardCard, passSim, botIndex, helpers),
     0
   );
-  const mindbugCost = state.players[botIndex].mindbugs <= 1 ? 12 : 5;
+  const mindbugCost = state.players[botIndex].mindbugs <= 1 ? 18 : 7;
   const emergencyBonus = passDanger >= state.players[botIndex].life ? 240 : passDanger >= state.players[botIndex].life - 1 ? 80 : 0;
   const boardPreservationBonus = Math.max(0, boardCardsSaved) * 45 + Math.max(0, boardValueSaved) * 1.5;
   const lifeSaved = Math.max(
