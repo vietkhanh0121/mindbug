@@ -82,6 +82,19 @@ export function createMindbugBot(botIndex = 1, config = {}) {
       const botLifeAfterPass = state.players[botIndex].life - avoidableDamage;
       const losingOpenRace = isLosingDirectRace(cloneState(state), botIndex, helpers);
       if (best && botLifeAfterPass <= 0) return best.card.id;
+      if (
+        best
+        && shouldPassToPreserveWinningRace(
+          state,
+          best.card,
+          context.attacker,
+          1 - botIndex,
+          botIndex,
+          helpers
+        )
+      ) {
+        return "";
+      }
       if (best && losingOpenRace && best.score > -20) return best.card.id;
       const enemyThreatAfterPass = realTotalFaceThreat(state, 1 - botIndex, helpers);
       if (best && enemyThreatAfterPass >= state.players[botIndex].life - 1 && !hasImmediateWin(state, helpers, botIndex)) return best.card.id;
@@ -843,6 +856,7 @@ function forcedActionOrderingScore(sim, action, activeIndex, perspectiveIndex, h
     if (keywords.includes("SNEAKY")) score += 70;
     if (keywords.includes("HUNTER") && enemy.board.length) score += 45;
     if (keywords.includes("FRENZY")) score += 35;
+    if (isFutileBlockedAttack(sim, attacker, activeIndex, helpers)) score -= 260;
     return activeIndex === perspectiveIndex ? score : -score;
   }
   if (action.type === "action") {
@@ -945,6 +959,7 @@ function actionHeuristicScore(sim, action, activeIndex, perspectiveIndex, helper
   if (action.type === "attack") {
     const attacker = player.board.find(item => item.id === action.cardId);
     if (!attacker) return score;
+    if (isFutileBlockedAttack(sim, attacker, activeIndex, helpers)) score -= 220;
     if (activeIndex === perspectiveIndex && simTotalFaceDamage(sim, enemyIndex, helpers) >= player.life) {
       score -= 8;
       if (simKeywords(attacker, sim, activeIndex, helpers).includes("SNEAKY")) score += 10;
@@ -1117,12 +1132,18 @@ function playPatternScore(card, sim, ownerIndex, helpers) {
   const owner = sim.players[ownerIndex];
   const enemy = sim.players[enemyIndex];
   const keywords = simKeywords(card, sim, ownerIndex, helpers);
+  const hasDominantEnemyBlocker = enemy.board.some(target => (
+    simPower(target, sim, enemyIndex, helpers) > simPower(card, sim, ownerIndex, helpers)
+  ));
   let score = 0;
   if (keywords.includes("SNEAKY") && !enemy.board.some(blocker => simKeywords(blocker, sim, enemyIndex, helpers).includes("SNEAKY"))) {
     score += 24 + Math.max(0, 3 - enemy.life) * 12;
   }
   if (keywords.includes("TOUGH") && owner.life <= 2) score += 20;
   if (keywords.includes("POISONOUS") && enemy.board.some(target => simPower(target, sim, enemyIndex, helpers) >= 6)) score += 18;
+  if (hasDominantEnemyBlocker && keywords.includes("POISONOUS")) score += 34;
+  if (hasDominantEnemyBlocker && keywords.includes("SNEAKY")) score += 28;
+  if (hasDominantEnemyBlocker && keywords.includes("HUNTER")) score += 22;
   if (keywords.includes("HUNTER") && enemy.board.length) score += 14;
   if (!helpers.creatureAbilitiesEnabled) return score;
   if (card.name === "Killer Bee" && enemy.life <= 1) score += 600;
@@ -1845,14 +1866,86 @@ function simLegalBlockers(sim, attacker, attackerIndex, defenderIndex, helpers) 
   });
 }
 
+function isFutileBlockedAttack(sim, attacker, attackerIndex, helpers) {
+  if (!attacker) return false;
+  const defenderIndex = 1 - attackerIndex;
+  const attackerKeywords = simKeywords(attacker, sim, attackerIndex, helpers);
+  if (attackerKeywords.includes("POISONOUS") || attackerKeywords.includes("HUNTER")) return false;
+  if (/^(Attack|When this attacks|Khi tấn công)[:\s]/i.test(attacker.ability ?? "")) return false;
+  const blockers = simLegalBlockers(sim, attacker, attackerIndex, defenderIndex, helpers);
+  if (!blockers.length) return false;
+  const attackerPower = simPower(attacker, sim, attackerIndex, helpers);
+  return blockers.some(blocker => {
+    const blockerKeywords = simKeywords(blocker, sim, defenderIndex, helpers);
+    const result = predictedCombatDefeats(
+      attacker,
+      blocker,
+      attackerPower,
+      simPower(blocker, sim, defenderIndex, helpers),
+      attackerKeywords,
+      blockerKeywords,
+      helpers.creatureAbilitiesEnabled
+    );
+    const canUsefullyBreakShield = blockerKeywords.includes("TOUGH") && blocker.damage < 1;
+    return result.defeatAttacker && !result.defeatBlocker && !canUsefullyBreakShield;
+  });
+}
+
 function chooseBestSimBlocker(sim, blockers, attacker, attackerIndex, defenderIndex, helpers) {
   const scored = blockers
     .map(blocker => ({ blocker, score: scoreSimBlock(blocker, attacker, sim, attackerIndex, defenderIndex, helpers) }))
     .sort((a, b) => b.score - a.score)[0];
   const defenderLifeAfterPass = sim.players[defenderIndex].life - 1;
   if (scored && defenderLifeAfterPass <= 0) return scored.blocker;
+  if (scored && shouldPassToPreserveWinningRace(
+    sim,
+    scored.blocker,
+    attacker,
+    attackerIndex,
+    defenderIndex,
+    helpers
+  )) return null;
   if (scored && !simHasImmediateWin(sim, defenderIndex, helpers)) return scored.blocker;
   return scored && scored.score > 0 ? scored.blocker : null;
+}
+
+function shouldPassToPreserveWinningRace(
+  sourceState,
+  blocker,
+  attacker,
+  attackerIndex,
+  defenderIndex,
+  helpers
+) {
+  if (!blocker || !attacker) return false;
+  const passSim = cloneState(sourceState);
+  passSim.players[defenderIndex].life -= simUnblockedDamage(
+    attacker,
+    passSim,
+    attackerIndex,
+    defenderIndex,
+    helpers
+  );
+  updateSimWinner(passSim);
+  if (passSim.winner !== null) return false;
+
+  const blockSim = cloneState(sourceState);
+  simCombat(blockSim, attacker.id, blocker.id, attackerIndex, defenderIndex, helpers);
+  updateSimWinner(blockSim);
+
+  const passOwnClock = simDirectRaceClock(passSim, defenderIndex, helpers);
+  const passEnemyClock = simDirectRaceClock(passSim, attackerIndex, helpers);
+  if (!Number.isFinite(passOwnClock) || passOwnClock > passEnemyClock) return false;
+
+  const blockOwnClock = simDirectRaceClock(blockSim, defenderIndex, helpers);
+  const passPressure = simTotalFaceDamage(passSim, defenderIndex, helpers);
+  const blockPressure = simTotalFaceDamage(blockSim, defenderIndex, helpers);
+  const blockerSurvivesBlock = blockSim.players[defenderIndex].board.some(card => card.id === blocker.id);
+  const preservesFasterKill = passOwnClock < blockOwnClock || passPressure > blockPressure;
+  const preservesStrategicCreature = !blockerSurvivesBlock
+    && scoreSimCard(blocker, passSim, defenderIndex, helpers) >= 8;
+
+  return preservesFasterKill || preservesStrategicCreature;
 }
 
 function simCombat(sim, attackerId, blockerId, attackerIndex, blockerIndex, helpers) {
@@ -2226,6 +2319,7 @@ function scoreAttack(card, state, helpers) {
   const enemyIndex = 0;
   const enemy = state.players[enemyIndex];
   let score = helpers.cardPower(card, 1) + 2;
+  if (isFutileBlockedAttack(state, card, 1, helpers)) score -= 220;
   if (helpers.canDealDirectDamage(card, 1, enemyIndex)) score += 10 + Math.max(0, 3 - enemy.life) * 6;
   if (helpers.cardKeywords(card, 1).includes("FRENZY") && card.attacksThisTurn === 0) score += 3;
   if (helpers.cardKeywords(card, 1).includes("HUNTER") && enemy.board.length) score += 2;
