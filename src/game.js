@@ -1,4 +1,4 @@
-import { createMindbugBot } from "./bot-player.js?v=30";
+import { createMindbugBot } from "./bot-player.js?v=31";
 import { GameAnimations } from "./game-animations.js?v=4";
 import { getSfxVolume, getSfxVolumeLevel, playSoundEffect, setSfxVolumeLevel, unlockAudio } from "./sound.js?v=13";
 import { io } from "socket.io-client";
@@ -1503,7 +1503,11 @@ async function animateDuelEvent(event, nextState, options = {}) {
   if (opponentAbilityCard) setOpponentAbilityMessage(opponentAbilityCard);
   const deferredLifeDelta = shouldDeferDuelLifeDelta(event);
   if (!deferredLifeDelta) {
-    await playDuelLifeDeltaFxFromStateDiff(state, nextState);
+    const lifeFxState = duelAttackAbilityLifeFxState(event, state, nextState);
+    const hasLifeLoss = lifeFxState.players?.some((player, index) => (
+      Number(player?.life) < Number(state.players?.[index]?.life)
+    ));
+    await playDuelLifeDeltaFxFromStateDiff(state, lifeFxState, { forceImpact: hasLifeLoss });
   }
   if (event.type !== "attack-face" && event.type !== "ability-hyenix-choice") await playHyenixReviveFxFromStateDiff(state, nextState);
   const explicitDiscardDraw = event.drawnToFive?.count > 0;
@@ -1710,6 +1714,7 @@ async function animateDuelEvent(event, nextState, options = {}) {
 }
 
 function shouldDeferDuelLifeDelta(event) {
+  if (["life-loss", "life-set", "self-life-loss"].includes(event?.ability)) return false;
   if (event?.defeatedEffects?.some(effect => Number(effect.lifeGain) > 0)) return true;
   if (
     event?.type === "ability-defeat"
@@ -1718,6 +1723,25 @@ function shouldDeferDuelLifeDelta(event) {
     return true;
   }
   return ["action-evolve", "attack-face", "attack-creature"].includes(event?.type);
+}
+
+function duelAttackAbilityLifeFxState(event, previousState, nextState) {
+  if (!["attack-face", "attack-creature"].includes(event?.type)) return nextState;
+  if (!["life-loss", "life-set", "self-life-loss"].includes(event?.ability)) return nextState;
+  const intermediate = cloneForNetwork(nextState);
+  for (let index = 0; index < 2; index += 1) {
+    if (intermediate.players?.[index] && previousState.players?.[index]) {
+      intermediate.players[index].life = previousState.players[index].life;
+    }
+  }
+  const actorIndex = Number(event.actorIndex);
+  const affectedIndex = event.ability === "self-life-loss" ? actorIndex : 1 - actorIndex;
+  const previousLife = Number(previousState.players?.[affectedIndex]?.life);
+  if (!Number.isFinite(previousLife) || !intermediate.players?.[affectedIndex]) return nextState;
+  intermediate.players[affectedIndex].life = event.ability === "life-set"
+    ? Math.min(previousLife, 1)
+    : previousLife - 1;
+  return intermediate;
 }
 
 async function playDuelDiscardAllFxIfNeeded(event) {
@@ -4296,10 +4320,14 @@ async function resolveAttackAbility(card, ownerIndex) {
       }
       break;
     case "Turbo Bug":
-      card.deferredAttackLifeEffect = "set-enemy-to-one";
+      if (enemy.life > 1) {
+        await setLife(enemy, 1, { screenImpact: true });
+        log(`${enemy.name} còn 1 LP bởi ${card.name}.`);
+      }
       break;
     case "Chameleon Sniper":
-      card.deferredAttackLifeEffect = "enemy-loses-one";
+      await loseLife(enemy, 1, { screenImpact: true });
+      log(`${enemy.name} mất 1 LP bởi ${card.name}.`);
       break;
     case "Tusked Exporter":
       await chooseCardsToDiscard(1 - ownerIndex, ownerIndex, card, 1);
@@ -4351,7 +4379,8 @@ async function resolveAttackAbility(card, ownerIndex) {
       await defeatOne(ownerIndex, enemy.board, "Chọn Quái vật để hạ", false, card);
       break;
     case "World Eater":
-      card.deferredAttackLifeEffect = "enemy-loses-one";
+      await loseLife(enemy, 1, { screenImpact: true });
+      log(`${enemy.name} mất 1 LP bởi ${card.name}.`);
       break;
     case "Frosty Fortress":
       await discardWholeHandAndDeck(1 - ownerIndex);
@@ -5160,7 +5189,7 @@ async function gainLife(player, amount) {
   await animations.lifeGain(state.players.indexOf(player), amount);
 }
 
-async function setLife(player, amount) {
+async function setLife(player, amount, options = {}) {
   const before = player.life;
   player.life = amount;
   const delta = amount - before;
@@ -5170,7 +5199,7 @@ async function setLife(player, amount) {
     renderScoreboardSafe();
     await animations.lifeGain(playerIndex, delta);
   }
-  if (delta < 0 && (playerIndex === 0 || amount <= 0)) {
+  if (delta < 0 && (playerIndex === 0 || amount <= 0 || options.screenImpact)) {
     playSoundEffect("lifeLoss");
     renderScoreboardSafe();
     await Promise.all([

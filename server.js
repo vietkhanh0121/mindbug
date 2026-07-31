@@ -939,12 +939,20 @@ function resolveServerAttackAbility(state, ownerIndex, card) {
     });
   }
   if (card.name === "Turbo Bug") {
-    card.deferredAttackLifeEffect = "set-enemy-to-one";
-    return { ability: "life-set-deferred" };
+    if (enemy.life <= 1) return { ability: null };
+    enemy.life = 1;
+    checkServerGameOver(state);
+    const hyenixResult = triggerServerHyenixFromDiscard(state, enemyIndex, continueAfter);
+    if (hyenixResult.pending) return { ...hyenixResult, ability: "life-set" };
+    return { ability: "life-set" };
   }
   if (card.name === "Chameleon Sniper") {
-    card.deferredAttackLifeEffect = "enemy-loses-one";
-    return { ability: "life-loss-deferred" };
+    enemy.life -= 1;
+    checkServerGameOver(state);
+    if (state.winner !== null) return { ability: "life-loss" };
+    const hyenixResult = triggerServerHyenixFromDiscard(state, enemyIndex, continueAfter);
+    if (hyenixResult.pending) return { ...hyenixResult, ability: "life-loss" };
+    return { ability: "life-loss" };
   }
   if (card.name === "Count Draculeech") {
     const candidates = state.players.flatMap((player, targetOwnerIndex) => (
@@ -1033,8 +1041,12 @@ function resolveServerAttackAbility(state, ownerIndex, card) {
     });
   }
   if (card.name === "World Eater") {
-    card.deferredAttackLifeEffect = "enemy-loses-one";
-    return { ability: "life-loss-deferred" };
+    enemy.life -= 1;
+    checkServerGameOver(state);
+    if (state.winner !== null) return { ability: "life-loss" };
+    const hyenixResult = triggerServerHyenixFromDiscard(state, enemyIndex, continueAfter);
+    if (hyenixResult.pending) return { ...hyenixResult, ability: "life-loss" };
+    return { ability: "life-loss" };
   }
   if (card.name === "Frosty Fortress") {
     const discarded = discardServerHandAndDeck(state, enemyIndex);
@@ -2077,13 +2089,37 @@ function applyGameAction(room, socket, action = {}) {
     const attackAbilityResult = resolveServerAttackAbility(state, attackerIndex, attacker);
     if (attackAbilityResult?.pending) {
       state.pending.forcedActionOwner = actorIndex;
-      return { ok: true, event: { type: "ability-pending", ability: "attack", pending: state.pending, sourceCard: { id: attacker.id, name: attacker.name }, defeatedIds: attackAbilityResult.defeatedIds ?? [], defeatedEffects: attackAbilityResult.defeatedEffects ?? [] } };
+      return { ok: true, event: { type: "ability-pending", ability: attackAbilityResult.ability ?? "attack", pending: state.pending, sourceCard: { id: attacker.id, name: attacker.name }, defeatedIds: attackAbilityResult.defeatedIds ?? [], defeatedEffects: attackAbilityResult.defeatedEffects ?? [] } };
     }
+    if (state.winner !== null) {
+      return {
+        ok: true,
+        event: {
+          type: "attack-face",
+          ability: attackAbilityResult?.ability ?? "attack",
+          actorIndex: attackerIndex,
+          defenderIndex: 1 - attackerIndex,
+          attackerId: attacker.id,
+          sourceCard: { id: attacker.id, name: attacker.name }
+        }
+      };
+    }
+    const forcedAbilityEventData = attackAbilityResult?.ability
+      ? {
+        ability: attackAbilityResult.ability,
+        sourceCard: { id: attacker.id, name: attacker.name },
+        defeatedIds: attackAbilityResult.defeatedIds ?? [],
+        defeatedEffects: attackAbilityResult.defeatedEffects ?? []
+      }
+      : {};
     const result = continueServerAttackAfterAbility(state, attackerIndex, attacker.id);
     if (state.pending) state.pending.forcedActionOwner = actorIndex;
     else if (state.winner === null) {
       state.active = actorIndex;
       endServerTurn(state);
+    }
+    if (result?.event && attackAbilityResult?.ability) {
+      result.event = { ...result.event, ...forcedAbilityEventData };
     }
     return result;
   }
@@ -2097,7 +2133,7 @@ function applyGameAction(room, socket, action = {}) {
     const attackAbilityResult = resolveServerAttackAbility(state, actorIndex, attacker);
     if (attackAbilityResult?.pending) {
       if (forcedActionOwner !== undefined) state.pending.forcedActionOwner = forcedActionOwner;
-      return { ok: true, event: { type: "ability-pending", ability: "attack", pending: state.pending, sourceCard: { id: attacker.id, name: attacker.name }, defeatedIds: attackAbilityResult.defeatedIds ?? [], defeatedEffects: attackAbilityResult.defeatedEffects ?? [] } };
+      return { ok: true, event: { type: "ability-pending", ability: attackAbilityResult.ability ?? "attack", pending: state.pending, sourceCard: { id: attacker.id, name: attacker.name }, defeatedIds: attackAbilityResult.defeatedIds ?? [], defeatedEffects: attackAbilityResult.defeatedEffects ?? [] } };
     }
     const abilityEventData = attackAbilityResult?.ability
       ? {

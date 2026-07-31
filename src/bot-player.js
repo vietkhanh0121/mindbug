@@ -1241,7 +1241,7 @@ function simDirectRaceClock(sim, ownerIndex, helpers) {
     if (!canSimAttack(card, raceState, ownerIndex, helpers)) return best;
     const keywords = simKeywords(card, raceState, ownerIndex, helpers);
     let damage = 1;
-    if (helpers.creatureAbilitiesEnabled && card.name === "Chameleon Sniper") damage += 1;
+    if (helpers.creatureAbilitiesEnabled && ["Chameleon Sniper", "World Eater"].includes(card.name)) damage += 1;
     if (helpers.creatureAbilitiesEnabled && card.name === "Turbo Bug" && raceState.players[defenderIndex].life > 1) {
       damage = raceState.players[defenderIndex].life;
     } else if (keywords.includes("FRENZY")) {
@@ -1666,6 +1666,11 @@ function applySimAttackAbility(sim, attacker, attackerIndex, defenderIndex, help
   if (attacker.name === "Turbo Bug" && defender.life > 1) {
     defender.life = 1;
   }
+  if (attacker.name === "World Eater") {
+    defender.life -= 1;
+  }
+  updateSimWinner(sim);
+  if (sim.winner !== null) return;
   if (attacker.name === "Tusked Exporter") {
     discardWorstSimCard(sim, defenderIndex, helpers);
   }
@@ -2002,16 +2007,18 @@ function simTotalFaceDamage(sim, ownerIndex, helpers) {
   for (const attacker of attackers) {
     const liveAttacker = defender.players[ownerIndex].board.find(card => card.id === attacker.id);
     if (!liveAttacker || !canSimAttack(liveAttacker, defender, ownerIndex, helpers)) continue;
+    if (helpers.creatureAbilitiesEnabled && ["Chameleon Sniper", "World Eater"].includes(liveAttacker.name)) {
+      total += 1;
+    }
+    if (helpers.creatureAbilitiesEnabled && liveAttacker.name === "Turbo Bug" && defender.players[defenderIndex].life - total > 1) {
+      total += Math.max(0, defender.players[defenderIndex].life - total - 1);
+    }
     const blockers = simLegalBlockers(defender, liveAttacker, ownerIndex, defenderIndex, helpers);
     const blocker = chooseBestSimBlocker(defender, blockers, liveAttacker, ownerIndex, defenderIndex, helpers);
     if (blocker) {
       simCombat(defender, liveAttacker.id, blocker.id, ownerIndex, defenderIndex, helpers);
     } else {
       total += simUnblockedDamage(liveAttacker, defender, ownerIndex, defenderIndex, helpers);
-      if (helpers.creatureAbilitiesEnabled && liveAttacker.name === "Chameleon Sniper") total += 1;
-      if (helpers.creatureAbilitiesEnabled && liveAttacker.name === "Turbo Bug" && defender.players[defenderIndex].life - total > 1) {
-        total += Math.max(0, defender.players[defenderIndex].life - total - 1);
-      }
     }
   }
   return total;
@@ -2030,7 +2037,7 @@ function simDefenseCoverage(sim, defenderIndex, helpers) {
 
 function simProjectedFaceDamage(card, sim, ownerIndex, defenderIndex, helpers) {
   let damage = 0;
-  if (helpers.creatureAbilitiesEnabled && card.name === "Chameleon Sniper") damage += 1;
+  if (helpers.creatureAbilitiesEnabled && ["Chameleon Sniper", "World Eater"].includes(card.name)) damage += 1;
   if (helpers.creatureAbilitiesEnabled && card.name === "Turbo Bug" && sim.players[defenderIndex].life > 1) {
     damage += sim.players[defenderIndex].life - 1;
   }
