@@ -690,6 +690,9 @@ const CARD_ANIMATION_STATE = {
   EVOLVING: "evolving"
 };
 const cardAnimationStates = new Map();
+const stableCardLayoutRects = new Map();
+let stableOverlayLayoutRect = null;
+let stableLayoutRefreshFrame = 0;
 const handLayoutCache = new Map();
 const handLayoutVersions = new Map();
 const suppressedBoardEnterCardIds = new Set();
@@ -725,7 +728,11 @@ function syncAppScale() {
   const viewportHeight = viewport?.height ?? window.innerHeight;
   const scale = Math.min(1, viewportWidth / APP_DESIGN_WIDTH, viewportHeight / APP_DESIGN_HEIGHT);
   document.documentElement.style.setProperty("--app-scale", scale.toFixed(4));
-  window.requestAnimationFrame(() => syncOpponentPendingAbilityPointer());
+  stableOverlayLayoutRect = null;
+  window.requestAnimationFrame(() => {
+    syncOpponentPendingAbilityPointer();
+    scheduleStableLayoutRefresh();
+  });
 }
 const animations = new GameAnimations();
 
@@ -5571,6 +5578,7 @@ function render() {
   renderHand();
   renderHandActionPanels();
   renderDebugPanel();
+  scheduleStableLayoutRefresh();
   const player = currentPlayer();
   if (els.statusText) {
     els.statusText.textContent = hasWinner()
@@ -5625,6 +5633,52 @@ function render() {
         ? `${player.name} có thể tấn công lần hai bằng Quái vật ĐÁNH 2 LẦN.`
       : `${player.name} đang đi: chơi 1 Quái vật hoặc tấn công.`;
   }
+}
+
+function cloneLayoutRect(rect) {
+  if (!rect) return null;
+  return {
+    left: rect.left,
+    top: rect.top,
+    right: rect.right,
+    bottom: rect.bottom,
+    width: rect.width,
+    height: rect.height
+  };
+}
+
+function stableCardLayoutKey(zone, ownerIndex, cardId) {
+  return `${zone}:${ownerIndex}:${cardId}`;
+}
+
+function rememberStableCardRect(zone, ownerIndex, cardId, rect) {
+  const copy = cloneLayoutRect(rect);
+  if (copy) stableCardLayoutRects.set(stableCardLayoutKey(zone, ownerIndex, cardId), copy);
+}
+
+function cachedCardRect(originEl, zone, ownerIndex, cardId) {
+  const cached = stableCardLayoutRects.get(stableCardLayoutKey(zone, ownerIndex, cardId));
+  return cloneLayoutRect(cached ?? originEl?.getBoundingClientRect?.());
+}
+
+function scheduleStableLayoutRefresh() {
+  if (stableLayoutRefreshFrame) window.cancelAnimationFrame(stableLayoutRefreshFrame);
+  stableLayoutRefreshFrame = window.requestAnimationFrame(() => {
+    stableLayoutRefreshFrame = 0;
+    const arenaRect = els.arena?.getBoundingClientRect();
+    const appRect = document.querySelector(".app")?.getBoundingClientRect();
+    if (!arenaRect || !appRect) return;
+    const centerX = appRect.left + appRect.width / 2;
+    const centerY = arenaRect.top + arenaRect.height / 2;
+    stableOverlayLayoutRect = {
+      left: centerX - CARD_BASE_WIDTH / 2,
+      top: centerY - CARD_BASE_HEIGHT / 2,
+      right: centerX + CARD_BASE_WIDTH / 2,
+      bottom: centerY + CARD_BASE_HEIGHT / 2,
+      width: CARD_BASE_WIDTH,
+      height: CARD_BASE_HEIGHT
+    };
+  });
 }
 
 function renderDebugPanel() {
@@ -6758,6 +6812,9 @@ function animateHandLayout(container, previousLayout, selector, side = "bottom",
         : cardEl.style.getPropertyValue("--hand-card-transform");
       const currentRect = cardEl.getBoundingClientRect();
       currentLayout.set(cardEl.dataset.cardId, currentRect);
+      if (cacheKey === "local" && cardEl.dataset.cardId) {
+        rememberStableCardRect("hand", 0, cardEl.dataset.cardId, currentRect);
+      }
       const previousRect = previousLayout.get(cardEl.dataset.cardId);
       const newCardOrder = newCardOrders.get(cardEl.dataset.cardId);
       const isNewCard = newCardOrder !== undefined;
@@ -6858,6 +6915,11 @@ function animateBoardLayout(container, previousLayout, cacheKey) {
     for (const slot of slots) {
       const currentRect = slot.getBoundingClientRect();
       currentLayout.set(slot.dataset.cardId, currentRect);
+      const boardOwnerIndex = cacheKey === "board-1" ? 1 : 0;
+      if (slot.dataset.cardId) {
+        const cardRect = slot.querySelector(".card")?.getBoundingClientRect() ?? currentRect;
+        rememberStableCardRect("board", boardOwnerIndex, slot.dataset.cardId, cardRect);
+      }
       const previousRect = previousLayout.get(slot.dataset.cardId);
       if (!previousRect) continue;
       const deltaX = previousRect.left - currentRect.left;
@@ -7276,12 +7338,21 @@ function abilitySupportNote(card) {
 }
 
 function positionCardInspectDialogAtBoard() {
-  const boardRect = els.arena?.getBoundingClientRect();
-  const appRect = document.querySelector(".app")?.getBoundingClientRect();
-  const centerX = appRect ? appRect.left + appRect.width / 2 : window.innerWidth / 2;
-  const centerY = boardRect ? boardRect.top + boardRect.height / 2 : window.innerHeight / 2;
+  const cachedRect = stableOverlayLayoutRect;
+  const boardRect = cachedRect ? null : els.arena?.getBoundingClientRect();
+  const appRect = cachedRect ? null : document.querySelector(".app")?.getBoundingClientRect();
+  const centerX = cachedRect
+    ? cachedRect.left + cachedRect.width / 2
+    : appRect ? appRect.left + appRect.width / 2 : window.innerWidth / 2;
+  const centerY = cachedRect
+    ? cachedRect.top + cachedRect.height / 2
+    : boardRect ? boardRect.top + boardRect.height / 2 : window.innerHeight / 2;
   els.cardInspectDialog.style.left = `${centerX}px`;
   els.cardInspectDialog.style.top = `${centerY}px`;
+}
+
+function cachedOverlayCardRect(targetEl = null) {
+  return cloneLayoutRect(stableOverlayLayoutRect ?? targetEl?.getBoundingClientRect?.());
 }
 
 function inspectCard(card, ownerIndex, zone, originEl = null) {
@@ -7333,7 +7404,7 @@ function showInspectCardImmediately(card, ownerIndex, zone, originEl = null) {
     cardId: card.id,
     ownerIndex,
     originEl,
-    originRect: normalizeCardTravelRect(originEl?.getBoundingClientRect()),
+    originRect: normalizeCardTravelRect(cachedCardRect(originEl, zone, ownerIndex, card.id)),
     targetEl: cardEl,
     zone,
     closing: false
@@ -7354,8 +7425,8 @@ function queueInspectHighlight(cardEl) {
 }
 
 function startInspectOpenAnimation(cardId, originEl, targetEl, zone, ownerIndex = null) {
-  const originRect = normalizeCardTravelRect(originEl?.getBoundingClientRect());
-  const targetRect = normalizeCardTravelRect(targetEl.getBoundingClientRect());
+  const originRect = normalizeCardTravelRect(cachedCardRect(originEl, zone, ownerIndex, cardId));
+  const targetRect = normalizeCardTravelRect(cachedOverlayCardRect(targetEl));
   inspectAnimation = {
     cardId,
     ownerIndex,
@@ -7568,7 +7639,7 @@ async function revealPlayedCardOverlay(card, ownerIndex, sourceRect = null, opti
   if (sourceRect) {
     await afterNextPaint();
     const fromRect = normalizeCardTravelRect(sourceRect);
-    const targetRect = normalizeCardTravelRect(cardEl.getBoundingClientRect());
+    const targetRect = normalizeCardTravelRect(cachedOverlayCardRect(cardEl));
     if (fromRect && targetRect) {
       const clone = await animateCardTravel(cardEl, fromRect, targetRect, {
         tilt: -3,
@@ -7605,7 +7676,7 @@ async function showHyenixChoiceOverlay(card, ownerIndex, sourceRect = null) {
   if (!sourceRect) return;
   await afterNextPaint();
   const fromRect = normalizeCardTravelRect(sourceRect);
-  const targetRect = normalizeCardTravelRect(cardEl.getBoundingClientRect());
+  const targetRect = normalizeCardTravelRect(cachedOverlayCardRect(cardEl));
   if (!fromRect || !targetRect) {
     cardEl.classList.remove("inspectCardPending");
     return;
@@ -7686,9 +7757,14 @@ async function closeInspectDialogWithAnimation() {
   setCardAnimationState(CARD_ANIMATION_STATE.INSPECT_CLOSING, animation.cardId, { zone: animation.zone });
   const targetEl = animation.targetEl;
   els.cardInspectContent.querySelector(".cardActions")?.classList.add("cardActionsClosing");
-  const fromRect = normalizeCardTravelRect(targetEl?.getBoundingClientRect());
+  const fromRect = normalizeCardTravelRect(cachedOverlayCardRect(targetEl));
   const originRect = animation.originEl?.isConnected
-    ? normalizeCardTravelRect(animation.originEl.getBoundingClientRect())
+    ? normalizeCardTravelRect(cachedCardRect(
+      animation.originEl,
+      animation.zone,
+      animation.ownerIndex,
+      animation.cardId
+    ))
     : animation.originRect;
   if (animation.zone === "board") {
     await fadeOutInspectCard(targetEl, animation.ownerIndex);
