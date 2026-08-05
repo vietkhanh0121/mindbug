@@ -8,5 +8,3 @@ assets/cards/* copy.png
 .env.*
 !.env.example
 npm-debug.log*
-playwright-report/
-test-results/

@@ -7,9 +7,7 @@
     "build": "vite build",
     "dev": "node server.js",
     "preview": "vite preview",
-    "start": "node server.js",
-    "test:iphone": "playwright test --project=iphone-webkit",
-    "test:iphone:ui": "playwright test --project=iphone-webkit --ui"
+    "start": "node server.js"
   },
   "engines": {
     "node": ">=20"
@@ -18,8 +16,5 @@
     "socket.io": "^4.8.3",
     "socket.io-client": "^4.8.3",
     "vite": "^5.4.11"
-  },
-  "devDependencies": {
-    "@playwright/test": "^1.62.1"
   }
 }
