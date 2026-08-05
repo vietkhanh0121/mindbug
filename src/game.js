@@ -690,6 +690,9 @@ const CARD_ANIMATION_STATE = {
   EVOLVING: "evolving"
 };
 const cardAnimationStates = new Map();
+const renderedCardElements = new Map();
+const renderedBoardSections = new Map();
+const renderedBoardSlots = new Map();
 const handLayoutCache = new Map();
 const handLayoutVersions = new Map();
 const suppressedBoardEnterCardIds = new Set();
@@ -725,7 +728,17 @@ function syncAppScale() {
   const viewportHeight = viewport?.height ?? window.innerHeight;
   const scale = Math.min(1, viewportWidth / APP_DESIGN_WIDTH, viewportHeight / APP_DESIGN_HEIGHT);
   document.documentElement.style.setProperty("--app-scale", scale.toFixed(4));
-  window.requestAnimationFrame(() => syncOpponentPendingAbilityPointer());
+  window.requestAnimationFrame(() => {
+    syncOpponentPendingAbilityPointer();
+    if (els.cardInspectDialog?.open) positionCardInspectDialogAtBoard();
+  });
+}
+
+function syncVisualViewportPosition() {
+  window.requestAnimationFrame(() => {
+    syncOpponentPendingAbilityPointer();
+    if (els.cardInspectDialog?.open) positionCardInspectDialogAtBoard();
+  });
 }
 const animations = new GameAnimations();
 
@@ -6070,39 +6083,46 @@ function closeDiscardDialog({ force = false } = {}) {
 
 function renderArena() {
   syncDimmedCardTransitions();
-  els.arena.innerHTML = "";
   clearAttackIntentLayer();
   let attackIntent = null;
+  const arenaChildren = [];
+  const boardAnimationPlans = [];
   [1, 0].forEach((playerIndex, slot) => {
     const player = state.players[playerIndex];
     const boardLayoutKey = `board-${playerIndex}`;
     const previousLayout = handLayoutSnapshot(boardLayoutKey);
-    const section = document.createElement("section");
+    const cachedSection = renderedBoardSections.get(playerIndex);
+    const section = cachedSection?.section ?? document.createElement("section");
     section.className = `battlefield ${slot === 0 ? "enemy" : "ally"}`;
-    const cards = document.createElement("div");
+    const cards = cachedSection?.cards ?? document.createElement("div");
     cards.className = "fieldCards";
-    section.append(cards);
-    els.arena.append(section);
+    if (cards.parentElement !== section) section.append(cards);
+    renderedBoardSections.set(playerIndex, { section, cards });
+    arenaChildren.push(section);
     const boardScale = Number.parseFloat(boardCardScale(player.board.length, cards));
     cards.style.setProperty("--board-scale", boardScale.toFixed(3));
     cards.style.setProperty("--board-card-width", `${(CARD_BASE_WIDTH * boardScale).toFixed(2)}px`);
     cards.style.setProperty("--board-card-height", `${(CARD_BASE_HEIGHT * boardScale).toFixed(2)}px`);
     cards.style.setProperty("--board-max-width", `${((CARD_BASE_WIDTH * boardScale * BOARD_ROW_CAPACITY) + ((BOARD_ROW_CAPACITY - 1) * 3)).toFixed(2)}px`);
+    const desiredSlots = [];
     if (player.board.length) {
       for (const card of player.board) {
-        const slot = document.createElement("div");
-        slot.className = "fieldCardSlot";
-        slot.dataset.cardId = card.id;
+        const slotKey = `${playerIndex}:${card.id}`;
+        const cardSlot = renderedBoardSlots.get(slotKey) ?? document.createElement("div");
+        renderedBoardSlots.set(slotKey, cardSlot);
+        cardSlot.className = "fieldCardSlot";
+        cardSlot.dataset.cardId = card.id;
         const cardEl = renderCard(card, playerIndex, "board");
         if (isCardAnimationState(card.id, CARD_ANIMATION_STATE.ATTACK_INTENT)) {
           cardEl.classList.add("attackIntentSourceHidden");
           attackIntent = { card, ownerIndex: playerIndex };
         }
-        slot.append(cardEl);
-        cards.append(slot);
+        if (cardEl.parentElement !== cardSlot) cardSlot.replaceChildren(cardEl);
+        desiredSlots.push(cardSlot);
       }
     }
-    animateBoardLayout(cards, previousLayout, boardLayoutKey);
+    reconcileElementChildren(cards, desiredSlots);
+    boardAnimationPlans.push({ cards, previousLayout, boardLayoutKey });
     if (slot === 0) {
       const isGameOver = hasWinner();
       const turnPointerActive = isGameOver ? state.winner : turnPointerTargetIndex();
@@ -6131,15 +6151,30 @@ function renderArena() {
       const rightIndicator = renderTurnPointerCell();
       centerCell.append(els.remoteMessage);
       messageRow.append(leftIndicator, centerCell, rightIndicator);
-      els.arena.append(messageRow);
+      arenaChildren.push(messageRow);
       if (turnPointerChanged) {
         window.requestAnimationFrame(() => animateTurnPointers(messageRow, turnPointerActive));
       }
     }
   });
+  reconcileElementChildren(els.arena, arenaChildren);
+  for (const plan of boardAnimationPlans) {
+    animateBoardLayout(plan.cards, plan.previousLayout, plan.boardLayoutKey);
+  }
   if (attackIntent) {
     renderAttackIntentLayer(attackIntent.card, attackIntent.ownerIndex);
   }
+}
+
+function reconcileElementChildren(container, desiredChildren) {
+  const desired = new Set(desiredChildren);
+  for (const child of [...container.children]) {
+    if (!desired.has(child)) child.remove();
+  }
+  desiredChildren.forEach((child, index) => {
+    const current = container.children[index];
+    if (current !== child) container.insertBefore(child, current ?? null);
+  });
 }
 
 function turnPointerTargetIndex() {
@@ -6919,34 +6954,24 @@ function renderHand() {
   const player = state.players[handOwnerIndex];
   const visibleHand = player.hand.filter(card => !hiddenReceivedHandCardIds.has(card.id));
   const previousLayout = handLayoutSnapshot("local");
-  els.hand.innerHTML = "";
-  if (discardSelection?.ownerIndex === handOwnerIndex) {
-    if (!visibleHand.length) {
-      clearHandLayout("local");
-      return;
-    }
-    for (const card of visibleHand) {
-      const cardEl = renderCard(card, handOwnerIndex, "hand");
-      setHandFanVars(cardEl, els.hand.children.length, visibleHand.length, els.hand);
-      els.hand.append(cardEl);
-    }
-    animateHandLayout(els.hand, previousLayout, ".hand > .card", "bottom", "local");
-    return;
-  }
   if (!visibleHand.length) {
+    reconcileElementChildren(els.hand, []);
     clearHandLayout("local");
     return;
   }
-  for (const card of visibleHand) {
+  const desiredCards = visibleHand.map((card, index) => {
     const cardEl = renderCard(card, handOwnerIndex, "hand");
-    setHandFanVars(cardEl, els.hand.children.length, visibleHand.length, els.hand);
-    els.hand.append(cardEl);
-  }
+    setHandFanVars(cardEl, index, visibleHand.length, els.hand);
+    return cardEl;
+  });
+  reconcileElementChildren(els.hand, desiredCards);
   animateHandLayout(els.hand, previousLayout, ".hand > .card", "bottom", "local");
 }
 
 function renderCard(card, ownerIndex, zone) {
-  const cardEl = document.createElement("article");
+  const cacheKey = `${zone}:${ownerIndex}:${card.id}`;
+  const cardEl = renderedCardElements.get(cacheKey) ?? document.createElement("article");
+  renderedCardElements.set(cacheKey, cardEl);
   const power = cardPower(card, ownerIndex);
   const keywords = cardKeywords(card, ownerIndex);
   const captainForcedAttackers = zone === "board" && state.phase === "action" && ownerIndex === state.active
@@ -6994,8 +7019,12 @@ function renderCard(card, ownerIndex, zone) {
   cardEl.className = `card ${canAct && !hasWinner() ? "canAct" : ""} ${isSelected ? "selectedCard" : ""} ${isEffectSourcePending ? "effectSourcePendingCard" : ""} ${isBlockCandidate ? "blockCandidate" : ""} ${isDiscardCandidate ? "discardCandidate" : ""} ${isDefeatCandidate ? "defeatCandidate" : ""} ${isStealCandidate ? "stealCandidate" : ""} ${isHunterTargetCandidate ? "hunterTargetCandidate" : ""} ${isUtilityKeywordCandidate ? "utilityKeywordCandidate" : ""} ${isCaptainForcedAttacker ? "captainForcedAttacker" : ""} ${isCaptainForcedUnavailable ? "captainForcedUnavailable" : ""} ${isReceivedCardCandidate ? "receivedCardCandidate" : ""} ${isDamaged ? "cardHitShake" : ""} ${isBoardExiting ? "boardCardExit" : ""} ${isMindbugPending ? "mindbugPendingCard" : ""} ${isDimmed ? "dimmedCard" : ""} ${isDimEntering ? "dimmedCardFadeIn" : ""} ${isDimFading ? "dimmedCardFadeOut" : ""} ${isMindbugTravelHidden ? "mindbugTravelHidden" : ""} ${isBoardExitHidden ? "boardExitHidden" : ""} ${isEvolutionHidden ? "evolutionHidden" : ""}`;
   cardEl.dataset.cardId = card.id;
   applyCardSprite(cardEl, card);
-  cardEl.innerHTML = cardFaceHtml(card, power, keywords, zone, ownerIndex);
-  cardEl.addEventListener("click", () => {
+  const faceHtml = cardFaceHtml(card, power, keywords, zone, ownerIndex);
+  if (cardEl.dataset.faceSignature !== faceHtml) {
+    cardEl.innerHTML = faceHtml;
+    cardEl.dataset.faceSignature = faceHtml;
+  }
+  cardEl.onclick = () => {
     if (isHunterTargetCandidate) {
       if (duelModeActive && state.pending?.type === "hunter") {
         inspectCard(card, ownerIndex, zone, cardEl);
@@ -7005,7 +7034,7 @@ function renderCard(card, ownerIndex, zone) {
       return;
     }
     inspectCard(card, ownerIndex, zone, cardEl);
-  });
+  };
   return cardEl;
 }
 
@@ -7278,8 +7307,27 @@ function abilitySupportNote(card) {
 function positionCardInspectDialogAtBoard() {
   const boardRect = els.arena?.getBoundingClientRect();
   const appRect = document.querySelector(".app")?.getBoundingClientRect();
-  const centerX = appRect ? appRect.left + appRect.width / 2 : window.innerWidth / 2;
-  const centerY = boardRect ? boardRect.top + boardRect.height / 2 : window.innerHeight / 2;
+  const viewport = window.visualViewport;
+  const viewportLeft = viewport?.offsetLeft ?? 0;
+  const viewportTop = viewport?.offsetTop ?? 0;
+  const viewportWidth = viewport?.width ?? window.innerWidth;
+  const viewportHeight = viewport?.height ?? window.innerHeight;
+  const dialogRect = els.cardInspectDialog?.open
+    ? els.cardInspectDialog.getBoundingClientRect()
+    : null;
+  const halfWidth = Math.max(CARD_BASE_WIDTH / 2, (dialogRect?.width ?? 0) / 2);
+  const halfHeight = Math.max(CARD_BASE_HEIGHT / 2, (dialogRect?.height ?? 0) / 2);
+  const margin = 8;
+  const desiredX = appRect ? appRect.left + appRect.width / 2 : viewportLeft + viewportWidth / 2;
+  const desiredY = boardRect ? boardRect.top + boardRect.height / 2 : viewportTop + viewportHeight / 2;
+  const centerX = Math.max(
+    viewportLeft + halfWidth + margin,
+    Math.min(viewportLeft + viewportWidth - halfWidth - margin, desiredX)
+  );
+  const centerY = Math.max(
+    viewportTop + halfHeight + margin,
+    Math.min(viewportTop + viewportHeight - halfHeight - margin, desiredY)
+  );
   els.cardInspectDialog.style.left = `${centerX}px`;
   els.cardInspectDialog.style.top = `${centerY}px`;
 }
@@ -7311,7 +7359,25 @@ function inspectCard(card, ownerIndex, zone, originEl = null) {
   positionCardInspectDialogAtBoard();
   els.cardInspectDialog.show();
   document.activeElement?.blur?.();
-  startInspectOpenAnimation(card.id, originEl, cardEl, zone, ownerIndex);
+  const openingAnimation = {
+    cardId: card.id,
+    ownerIndex,
+    originEl,
+    originRect: normalizeCardTravelRect(originEl?.getBoundingClientRect()),
+    targetEl: cardEl,
+    zone,
+    closing: false,
+    measuring: true
+  };
+  inspectAnimation = openingAnimation;
+  window.requestAnimationFrame(() => {
+    window.requestAnimationFrame(() => {
+      if (inspectAnimation !== openingAnimation || openingAnimation.closing) return;
+      if (!cardEl.isConnected || !els.cardInspectDialog.open) return;
+      positionCardInspectDialogAtBoard();
+      startInspectOpenAnimation(card.id, originEl, cardEl, zone, ownerIndex);
+    });
+  });
 }
 
 function showInspectCardImmediately(card, ownerIndex, zone, originEl = null) {
@@ -8313,7 +8379,7 @@ window.addEventListener("pointerup", event => endHandScrubGesture(event));
 window.addEventListener("pointercancel", event => endHandScrubGesture(event));
 window.addEventListener("resize", syncAppScale);
 window.visualViewport?.addEventListener("resize", syncAppScale);
-window.visualViewport?.addEventListener("scroll", syncAppScale);
+window.visualViewport?.addEventListener("scroll", syncVisualViewportPosition);
 document.addEventListener("focusin", event => {
   if (!event.target.matches?.("input, textarea, [contenteditable='true']")) return;
   window.clearTimeout(viewportScaleUnlockTimer);
