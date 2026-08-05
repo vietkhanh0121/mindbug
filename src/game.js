@@ -8424,7 +8424,10 @@ syncAppScale();
 if ("serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "localhost")) {
   window.addEventListener("load", () => {
     const serviceWorkerUrl = new URL(`${import.meta.env.BASE_URL}sw.js`, location.href);
-    navigator.serviceWorker.register(serviceWorkerUrl, { scope: import.meta.env.BASE_URL }).catch(error => {
+    navigator.serviceWorker.register(serviceWorkerUrl, {
+      scope: import.meta.env.BASE_URL,
+      updateViaCache: "none"
+    }).catch(error => {
       console.warn("Không đăng ký được chế độ ứng dụng.", error);
     });
   });

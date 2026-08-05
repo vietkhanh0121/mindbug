@@ -1,4 +1,4 @@
-const CACHE_NAME = "cuop-rau-qua-v8";
+const CACHE_NAME = "cuop-rau-qua-v9";
 const APP_SHELL = [
   "./",
   "./index.html",
@@ -42,6 +42,32 @@ self.addEventListener("fetch", event => {
           return response;
         })
         .catch(() => caches.match(request).then(response => response || caches.match("./index.html")))
+    );
+    return;
+  }
+
+  const cacheFirstAsset = [
+    "/assets/cards/",
+    "/assets/avatars/",
+    "/assets/background/",
+    "/assets/fonts/",
+    "/assets/fx/",
+    "/assets/icons/",
+    "/assets/ui/"
+  ].some(path => url.pathname.includes(path));
+
+  if (cacheFirstAsset) {
+    event.respondWith(
+      caches.match(request).then(cached => {
+        if (cached) return cached;
+        return fetch(request).then(response => {
+          if (response.ok) {
+            const copy = response.clone();
+            caches.open(CACHE_NAME).then(cache => cache.put(request, copy));
+          }
+          return response;
+        });
+      })
     );
     return;
   }
